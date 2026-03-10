@@ -23,8 +23,8 @@ function [X_Est, P_Est, GT] = myEKF(out)
 
 % --- Arena dimensions (half-widths) [m] ---
 % Replace with actual values when provided
-Lx = 2.4;
-Ly = 2.4;
+Lx = 2.44; % +- 0.01
+Ly = 2.44; % +- 0.01
 
 % --- ToF sensor mounting angles [rad] relative to robot body x-axis ---
 % phi1: left sensor fires left (+90 deg)
