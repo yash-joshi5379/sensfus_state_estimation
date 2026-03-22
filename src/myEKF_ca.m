@@ -7,13 +7,14 @@ function [X_Est, P_Est] = myEKF_ca(acc, gyro, mag, ToF1, ToF2, ToF3, Temp, LP_ac
 % Called once per sample from Simulink / a real-time loop.
 % Rename file + function to myEKF when replacing the batch version.
 %
-% ---------- State vector (8 × 1) ----------
-%   X = [x; y; theta; vx; vy; omega; ax; ay]
+% ---------- State vector (9 × 1) ----------
+%   X = [x; y; theta; vx; vy; omega; ax; ay; b_omega]
 %   x, y    : position in arena frame  [m]   (origin at arena centre)
 %   theta   : heading                  [rad]
 %   vx, vy  : velocity, world frame    [m/s]
 %   omega   : yaw rate                 [rad/s]
 %   ax, ay  : acceleration, world frame[m/s^2]
+%   b_omega : gyro yaw-rate bias       [rad/s]  (residual above static calibration)
 %
 % ---------- System model ----------
 %   Constant-acceleration kinematics; state propagated with fixed dt.
@@ -63,7 +64,7 @@ if isempty(initialised)
 
     % --- Raw-sensor scaling ----------------------------------------------
     acc_scale       = 1.0;     % multiply raw acc  to get [m/s^2]
-    gyro_scale      = 1.02;   % reduced from 1.05: task datasets show ~3% over-integration per revolution
+    gyro_scale      = 1.1;   % reduced from 1.05: task datasets show ~3% over-integration per revolution
     mag_declination        = 1.168;    % calibrated from full rotation dataset [rad]
     mag_declination_static = -1.4245;  % calibrated from calib2_straight static frames [rad]
 
@@ -79,26 +80,26 @@ if isempty(initialised)
     tof_phi = [-pi/2; 0; pi/2];   % right, forward, left
 
     % --- Mahalanobis gate  (chi-sq 1 DOF, 99th percentile) --------------
-    chi2_thresh = 6.63;
+    chi2_thresh = 4.0;
 
     % --- Initial state ---------------------------------------------------
-    X = zeros(8, 1);   % assume robot starts at arena centre, at rest
+    X = zeros(9, 1);   % assume robot starts at arena centre, at rest, zero bias
 
     % --- Initial covariance P --------------------------------------------
     P = diag([ 0.50,  0.50,  deg2rad(45), ...   % x, y, theta
                0.50,  0.50,  0.20,        ...   % vx, vy, omega
-               1.00,  1.00 ].^2);               % ax, ay
+               1.00,  1.00,  0.05 ].^2);        % ax, ay, b_omega
 
     % --- Process noise Q -------------------------------------------------
     Q = diag([ 5e-3, 5e-3, deg2rad(3), ...   % x, y, theta
                0.05, 0.05, 0.10,       ...   % vx, vy, omega
-               0.30, 0.30 ].^2);             % ax, ay
+               0.15, 0.15, 3e-3 ].^2);       % ax, ay, b_omega (random walk — allows motors-on bias shift)
 
     % --- IMU measurement noise  z = [acc_bx, acc_by, omega] -------------
     R_imu = diag([ 0.50, 0.50, 0.02 ].^2);
 
     % --- ToF measurement noise [m^2] -------------------------------------
-    R_tof = (0.05)^2;
+    R_tof = (0.15)^2;
 
     % --- Sensor Calibrations ---------------------------------------------
     acc_x_bias = 0.0275;      acc_y_bias = -0.3963;
@@ -125,14 +126,13 @@ acc_by = double(acc(3))  * acc_scale - acc_y_bias;    % body y-acceleration  [m/
 gyro_z   = (double(gyro(1)) - gyro_x_bias) * gyro_scale;  % bias before scale
 fast_spin = abs(gyro_z) > 0.5;
 
-% Magnetometer is not used for updates — hard-iron interference from motors
-% is ~180 deg during operation (measured on calibration data).
-% One-time heading seed at step 1: only when robot is stationary (motors off,
-% gyro near zero), so mag is reliable. Skipped automatically if already moving.
+% Magnetometer: one-time heading seed at step 1 only, gated on low gyro_z
+% (motors off). During operation, EMI corrupts mag so it is not used further.
 if step == 1 && abs(gyro_z) < 0.15
-    X(3)    = wrapToPi(atan2(double(mag(3)) - mag_y_bias, ...
-                             double(mag(2)) - mag_x_bias) + mag_declination_static);
-    P(3,3)  = (0.20)^2;   % tighter than default 45° — mag reliable with motors off
+    theta_seed = wrapToPi(atan2(double(mag(3)) - mag_y_bias, ...
+                                double(mag(2)) - mag_x_bias) + mag_declination_static);
+    X(3)    = theta_seed;
+    P(3,3)  = deg2rad(10)^2;   % tighten heading uncertainty after seed
 end
 
 % ToF: channel 1 = range [m], channel 4 = status (0 = valid)
@@ -142,9 +142,9 @@ tof_ok = double([ToF1(4); ToF2(4); ToF3(4)]) == 0;
 % =========================================================================
 %  PREDICTION STEP  — constant acceleration
 % =========================================================================
-x_s = X(1);  y_s = X(2);  th  = X(3);
-vx  = X(4);  vy  = X(5);  om  = X(6);
-axw = X(7);  ayw = X(8);
+x_s = X(1);  y_s = X(2);  th    = X(3);
+vx  = X(4);  vy  = X(5);  om    = X(6);
+axw = X(7);  ayw = X(8);  b_om  = X(9);
 
 X_p = [
     x_s + vx*dt + 0.5*axw*dt^2;
@@ -154,11 +154,12 @@ X_p = [
     vy  + ayw*dt;
     om;
     axw;
-    ayw
+    ayw;
+    b_om   % bias is constant between updates (random-walk noise in Q)
 ];
 
 % State-transition Jacobian  F = ∂f/∂X
-F      = eye(8);
+F      = eye(9);
 F(1,4) = dt;    F(1,7) = 0.5*dt^2;
 F(2,5) = dt;    F(2,8) = 0.5*dt^2;
 F(3,6) = dt;
@@ -168,12 +169,20 @@ F(5,8) = dt;
 % During fast spin, inflate position process noise so P grows faster.
 % This widens the chi2 gate for ToF — valid range measurements are accepted
 % even if position has drifted slightly due to centripetal contamination.
+% Gyro bias (b_omega) is only allowed to drift when stationary — freeze it
+% during motion by zeroing Q(9,9) so P(9,9) stays small and the Kalman
+% gain for bias remains near zero.
+is_stationary_q = abs(gyro_z) < 0.10 && sqrt(acc_bx^2 + acc_by^2) < 0.15;
 if fast_spin
     Q_cur      = Q;
     Q_cur(1,1) = (0.15)^2;
     Q_cur(2,2) = (0.15)^2;
+    Q_cur(9,9) = 0;
+elseif is_stationary_q
+    Q_cur = Q;   % allow bias to drift (track slow EMI changes at rest)
 else
-    Q_cur = Q;
+    Q_cur      = Q;
+    Q_cur(9,9) = 0;   % freeze bias during motion
 end
 P_p = F * P * F' + Q_cur;
 
@@ -184,6 +193,7 @@ th_p = X_p(3);
 axp  = X_p(7);
 ayp  = X_p(8);
 omp  = X_p(6);
+b_p  = X_p(9);
 
 % During fast rotation, centripetal acceleration contaminates the body-frame
 % acc measurement and projects into world-frame ax/ay → position drift.
@@ -198,17 +208,21 @@ end
 h_ax  =  axp*cos(th_p) + ayp*sin(th_p);
 h_ay  = -axp*sin(th_p) + ayp*cos(th_p);
 
-% --- acc + gyro update (every step, no mag) ---
-h_imu = [h_ax; h_ay; omp];
+% Gyro predicted measurement includes estimated residual bias:
+%   measured_gyro = omega_true + b_residual + noise
+%   h_gyro        = omega_state + b_state
+h_gyro = omp + b_p;
 
-H_imu = zeros(3, 8);
-H_imu(1,3) = 0;                                  % acc does not correct theta (gyro handles it)
-H_imu(1,7) =  cos(th_p);                         % ∂h_ax/∂ax
-H_imu(1,8) =  sin(th_p);                         % ∂h_ax/∂ay
-H_imu(2,3) = 0;                                  % acc does not correct theta (gyro handles it)
-H_imu(2,7) = -sin(th_p);                         % ∂h_ay/∂ax
-H_imu(2,8) =  cos(th_p);                         % ∂h_ay/∂ay
-H_imu(3,6) =  1;                                 % ∂omega/∂omega
+% --- acc + gyro update (every step) ---
+h_imu = [h_ax; h_ay; h_gyro];
+
+H_imu = zeros(3, 9);
+H_imu(1,7) =  cos(th_p);   % ∂h_ax/∂ax
+H_imu(1,8) =  sin(th_p);   % ∂h_ax/∂ay
+H_imu(2,7) = -sin(th_p);   % ∂h_ay/∂ax
+H_imu(2,8) =  cos(th_p);   % ∂h_ay/∂ay
+H_imu(3,6) =  1;            % ∂h_gyro/∂omega
+H_imu(3,9) =  1;            % ∂h_gyro/∂b_omega
 
 z_imu  = [acc_bx; acc_by; gyro_z];
 nu_imu = z_imu - h_imu;
@@ -218,7 +232,25 @@ K_imu = P_p * H_imu' / S_imu;
 
 X_u    = X_p + K_imu * nu_imu;
 X_u(3) = wrapToPi(X_u(3));
-P_u    = (eye(8) - K_imu * H_imu) * P_p;
+P_u    = (eye(9) - K_imu * H_imu) * P_p;
+
+% =========================================================================
+%  UPDATE — Zero-rotation pseudo-measurement
+%  When the robot is stationary, omega_true = 0. Any gyro reading beyond
+%  noise is bias. This directly drives b_omega estimation during stops.
+% =========================================================================
+if is_stationary_q && step > 1
+    H_zr    = zeros(1, 9);
+    H_zr(6) = 1;            % observes omega state
+    R_zr    = (0.01)^2;     % confident the robot isn't rotating [rad/s]²
+
+    nu_zr = 0 - X_u(6);     % omega should be zero
+    S_zr  = H_zr * P_u * H_zr' + R_zr;
+    K_zr  = P_u * H_zr' / S_zr;
+
+    X_u = X_u + K_zr * nu_zr;
+    P_u = (eye(9) - K_zr * H_zr) * P_u;
+end
 
 % =========================================================================
 %  UPDATE — ToF sensors  (10 Hz: every 20th step)
@@ -253,7 +285,7 @@ for s = 1:3 * do_tof
     % terms) plus ray direction rotates with theta (dh_dth_s).
     % With correct arena dimensions and working position estimate, ToF residuals
     % now reflect true heading error rather than position error.
-    H_tof    = zeros(1, 8);
+    H_tof    = zeros(1, 9);
     H_tof(1) = dh_dsx;
     H_tof(2) = dh_dsy;
     H_tof(3) = 0;   % heading excluded: dh/dtheta can be several m/rad at oblique angles;
@@ -271,7 +303,7 @@ for s = 1:3 * do_tof
     K_tof(3) = 0;   % zero to match H(3)=0 and maintain P symmetry
     X_u      = X_u + K_tof * nu_tof;
     X_u(3) = wrapToPi(X_u(3));
-    P_u    = (eye(8) - K_tof * H_tof) * P_u;
+    P_u    = (eye(9) - K_tof * H_tof) * P_u;
 end
 
 % =========================================================================
