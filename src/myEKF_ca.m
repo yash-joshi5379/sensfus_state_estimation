@@ -72,9 +72,9 @@ if isempty(initialised)
     %   Row i = [dx_fwd, dy_left]
     %     dx_fwd  > 0  →  toward robot front
     %     dy_left > 0  →  toward robot left side
-    tof_offsets = [ 0.20,  0.04;   % ToF1 – right-facing
-                    0.209, 0.00;   % ToF2 – forward-facing
-                    0.20, -0.04];  % ToF3 – left-facing
+    tof_offsets = [ 0.0,  0.04;   % ToF1 – right-facing
+                    -0.09, 0.00;   % ToF2 – forward-facing
+                    0.0, -0.04];  % ToF3 – left-facing
 
     % --- ToF firing angles relative to body forward axis [rad] -----------
     tof_phi = [pi/2; pi; -pi/2];   % right, forward, left (body x points backward)
@@ -121,14 +121,14 @@ do_tof = (mod(step, tof_update_freq) == 0);   % true every 20th call (10 Hz)
 %  EXTRACT MEASUREMENTS
 % =========================================================================
 % Board upended: robot horizontal plane on sensor indices 2 & 3
-acc_bx = double(acc(2))  * acc_scale - acc_x_bias;    % body x-acceleration  [m/s^2]
+acc_bx = -double(acc(2))  * acc_scale - acc_x_bias;    % body x-acceleration  [m/s^2]
 acc_by = double(acc(3))  * acc_scale - acc_y_bias;    % body y-acceleration  [m/s^2]
 gyro_z   = (double(gyro(1)) - gyro_x_bias) * gyro_scale;  % bias before scale
 fast_spin = abs(gyro_z) > 0.5;
 
 % Magnetometer: one-time heading seed at step 1 only, gated on low gyro_z
 % (motors off). During operation, EMI corrupts mag so it is not used further.
-if step == 1 && abs(gyro_z) < 0.15
+if step == 1
     theta_seed = wrapToPi(atan2(double(mag(3)) - mag_y_bias, ...
                                 double(mag(2)) - mag_x_bias) + mag_declination_static);
     X(3)    = theta_seed;
@@ -276,6 +276,17 @@ for s = 1:3 * do_tof
         continue
     end
 
+    % Reject readings whose predicted hit point is near an arena corner.
+    % Near corners, a small heading error flips which wall is hit, producing
+    % a 1-2m discontinuous jump in h_pred that corrupts position.
+    ray_world = th_u + tof_phi(s);
+    hit_x = sx + h_pred * cos(ray_world);
+    hit_y = sy + h_pred * sin(ray_world);
+    corner_margin = 0.2;
+    if abs(hit_x) > (Lx - corner_margin) && abs(hit_y) > (Ly - corner_margin)
+        continue
+    end
+
     % ∂(sensor world pos)/∂theta via offset rotation
     dsx_dth = -sin(th_u)*dx_body - cos(th_u)*dy_body;
     dsy_dth =  cos(th_u)*dx_body - sin(th_u)*dy_body;
@@ -321,6 +332,7 @@ X = X_u;
 P = P_u;
 
 X_Est = X;
+% X_Est(2) = X_Est(2) - 0.25; % Necessary offset for where the GT is zeroed
 P_Est = P;
 
 end % myEKF_ca
