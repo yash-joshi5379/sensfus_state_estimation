@@ -1,3 +1,5 @@
+clc;
+
 figure(1); clf; hold on;
 plot(sensorLog.GT_position.signals.values(:,1),sensorLog.GT_position.signals.values(:,2))
 plot(out.X_Est.signals.values(:,1),out.X_Est.signals.values(:,2))
@@ -13,6 +15,6 @@ for i = 1:size(gt_quat,1)
     gt_yaw(i) = atan2(2*(w*qz + qx*qy), 1 - 2*(qy^2 + qz^2));
 end
 plot(gt_yaw);
-plot(out.P_Est.signals.values);
+plot(out.X_Est.signals.values(:,3));
 legend(["GT", "Est"]);
 hold off;
