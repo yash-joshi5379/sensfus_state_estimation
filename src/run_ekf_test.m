@@ -5,10 +5,14 @@
 clc; clear;
 
 datasets = { ...
-    'data\calib1_rotate.mat',   'rotate'; ...
-    'data\calib2_straight.mat', 'straight'; ...
+    'data\task1_1 1.mat',       'task1_1' ; ...
+    'data\task1_2 1.mat',       'task1_2' ; ...
+    'data\task1_3.mat',         'task1_3' ; ...
     'data\task2_1 1.mat',       'task2_1' ; ...
-    'data\task2_2 1.mat',       'task2_2' };
+    'data\task2_2 1.mat',       'task2_2' ; ...
+    'data\task2_3 1.mat',       'task2_3' };
+
+results = zeros(size(datasets, 1), 4);  % [pos_SSE, pos_MSE, yaw_SSE, yaw_MSE]
 
 for d = 1:size(datasets, 1)
     DATA_FILE = datasets{d, 1};
@@ -70,6 +74,17 @@ for d = 1:size(datasets, 1)
         gt_yaw(i) = atan2(2*(w*qz + qx*qy), 1 - 2*(qy^2 + qz^2));
     end
 
+    %% --- Errors ---
+    pos_sq_err = (X_log(:,1) - gt_pos(:,1)).^2 + (X_log(:,2) - gt_pos(:,2)).^2;
+    yaw_err    = wrapToPi(X_log(:,3) - gt_yaw).^2;
+
+    pos_SSE = sum(pos_sq_err);
+    pos_MSE = mean(pos_sq_err);
+    yaw_SSE = sum(yaw_err);
+    yaw_MSE = mean(yaw_err);
+
+    results(d,:) = [pos_SSE, pos_MSE, yaw_SSE, yaw_MSE];
+
     %% --- Plot: Heading ---
     figure(2*d - 1); clf; hold on;
     plot(gt_yaw,     'b', 'DisplayName', 'GT');
@@ -87,21 +102,31 @@ for d = 1:size(datasets, 1)
     saveas(gcf, [TAG '_position.jpg']);
 
     %% --- Plot: Velocity ---
-    dt = 1/200;
-    gt_vx = [0; diff(gt_pos(:,1))] / dt;
-    gt_vy = [0; diff(gt_pos(:,2))] / dt;
-
-    figure(4*d - 1); clf;
-    subplot(2,1,1); hold on;
-    plot(gt_vx,      'b', 'DisplayName', 'GT');
-    plot(X_log(:,4), 'r', 'DisplayName', 'Est');
-    ylabel('vx [m/s]'); xlabel('Sample');
-    title(['Velocity X — ' TAG]); legend; hold off;
-
-    subplot(2,1,2); hold on;
-    plot(gt_vy,      'b', 'DisplayName', 'GT');
-    plot(X_log(:,5), 'r', 'DisplayName', 'Est');
-    ylabel('vy [m/s]'); xlabel('Sample');
-    title(['Velocity Y — ' TAG]); legend; hold off;
-    saveas(gcf, [TAG '_velocity.jpg']);
+    % dt = 1/200;
+    % gt_vx = [0; diff(gt_pos(:,1))] / dt;
+    % gt_vy = [0; diff(gt_pos(:,2))] / dt;
+    % 
+    % figure(4*d - 1); clf;
+    % subplot(2,1,1); hold on;
+    % plot(gt_vx,      'b', 'DisplayName', 'GT');
+    % plot(X_log(:,4), 'r', 'DisplayName', 'Est');
+    % ylabel('vx [m/s]'); xlabel('Sample');
+    % title(['Velocity X — ' TAG]); legend; hold off;
+    % 
+    % subplot(2,1,2); hold on;
+    % plot(gt_vy,      'b', 'DisplayName', 'GT');
+    % plot(X_log(:,5), 'r', 'DisplayName', 'Est');
+    % ylabel('vy [m/s]'); xlabel('Sample');
+    % title(['Velocity Y — ' TAG]); legend; hold off;
+    % saveas(gcf, [TAG '_velocity.jpg']);
 end
+
+%% --- Summary table ---
+fprintf('\n%-12s  %10s  %10s  %10s  %10s\n', ...
+    'Dataset', 'Pos SSE', 'Pos MSE', 'Yaw SSE', 'Yaw MSE');
+fprintf('%s\n', repmat('-', 1, 57));
+for d = 1:size(datasets, 1)
+    fprintf('%-12s  %10.4f  %10.4f  %10.4f  %10.4f\n', ...
+        datasets{d,2}, results(d,1), results(d,2), results(d,3), results(d,4));
+end
+fprintf('\nPosition errors in m^2, yaw errors in rad^2\n');

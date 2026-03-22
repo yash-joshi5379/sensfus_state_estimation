@@ -77,7 +77,7 @@ if isempty(initialised)
                     0.20, -0.04];  % ToF3 – left-facing
 
     % --- ToF firing angles relative to body forward axis [rad] -----------
-    tof_phi = [-pi/2; 0; pi/2];   % right, forward, left
+    tof_phi = [pi/2; pi; -pi/2];   % right, forward, left (body x points backward)
 
     % --- Mahalanobis gate  (chi-sq 1 DOF, 99th percentile) --------------
     chi2_thresh = 4.0;
