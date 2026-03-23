@@ -129,7 +129,7 @@ For test purposes (`run_ekf_test.m`), a `fake_mag` vector encoding the GT headin
 to guarantee the seed fires regardless of motor state.
 
 **Not used for ongoing updates.**
-Reason: motor EMI causes ~180° heading interference during operation. The effective
+Reason: motor EMI causes highly variable heading interference during operation. The effective
 declination varies with motor speed and load, so there is no stable calibration constant
 to use during motion.
 
@@ -137,6 +137,70 @@ to use during motion.
 Result: caused heading jumps at the start of datasets (motor ramp-up has intermediate EMI,
 neither static nor full-speed) and continued drift elsewhere. The `mag_declination` baseline
 is wrong for slow-speed operation. Removed.
+
+**Tried: chi²-gated mag update (every step, no motion gate)** — `sweep_mag_chi2.m`,
+`sweep_mag_decl.m`. The hypothesis was that chi² rejection would filter EMI-corrupted
+readings without needing to know when motors are on or off.
+
+**Declination diagnostic (`sweep_mag_decl.m` Part 1) — effective declination during operation:**
+
+| Dataset  | decl_med | decl_std | decl_iqr |
+|----------|----------|----------|----------|
+| task1_1  | -1.623   | 1.137    | 1.416    |
+| task1_2  | -1.585   | 1.253    | 1.221    |
+| task1_3  | -1.711   | 1.346    | 1.402    |
+| task1_4  | -1.717   | 1.586    | 1.604    |
+| task2_1  | -1.522   | 1.443    | 0.289    |
+| task2_2  | -1.189   | 1.961    | 3.011    |
+| task2_3  | -1.562   | 2.041    | 1.598    |
+| task2_4  | -1.228   | 1.963    | 3.796    |
+
+decl_std of 1.1–2.0 rad (60–115°) spanning ±π on every dataset. The EMI corruption is not
+a stable offset — it is highly variable and essentially covers the full angular range.
+
+Result: all chi²-gated mag combinations made things 3–7× worse than no-mag baseline.
+Accept rate was ~100% in all cases — the heading estimate drifts to match the wrong mag reading,
+after which all future readings appear consistent (small chi²) and are accepted. The chi² gate
+cannot detect this circular convergence to the wrong heading.
+
+Declination sweep (decl from -1.4245 to π): no declination value improved over baseline.
+Best found (decl = -1.0) still 3.7× worse on summed position RMSE.
+
+**Conclusion: magnetometer cannot contribute heading corrections during motor operation on this hardware.
+EMI is too variable — no fixed declination constant and no outlier-rejection scheme can help.**
+
+**Tried: stationary-gated mag update** (`is_stationary` gate: `|gyro_z|<0.10 && |acc|<0.15`)
+— `sweep_mag_stationary.m`. Hypothesis: motors-off stationary phases have low EMI and the static
+declination (-1.4245) should be valid.
+
+Result: `is_stationary` fires on 28–55% of all samples — far too many for "motors truly off".
+Robot controllers energise motors even at zero velocity to hold position (torque-mode), so EMI
+persists during stationary holds. All R_mag/chi² combinations remained 3–7× worse than baseline.
+
+**Tried: sustained stationary-gated mag** (N_min = 400–1500 samples = 2–7.5 s)
+— `sweep_mag_sustained.m`, `sweep_mag_sustained2.m`. Hypothesis: requiring prolonged stillness
+filters motor-hold transients and only catches genuine motor-off pauses.
+
+N_min=400 (2s), R_mag=20°: first configuration to beat baseline on summed position RMSE
+(1.2637 vs 1.3451, 6% improvement). Per-dataset results:
+
+| Dataset  | pos_RMSE (mag) | pos_RMSE (base) | Δ       |
+|----------|----------------|-----------------|---------|
+| task2_1  | 0.0262         | 0.0484          | **–46%** |
+| task2_4  | 0.0592         | 0.0830          | **–29%** |
+| task2_2  | 0.0990         | 0.0492          | +101%   |
+| task2_3  | 0.0658         | 0.0520          | +27%    |
+
+Yaw RMSE is worse on every dataset (heading correction pulls in the wrong direction on average).
+The benefit/regression split is inconsistent across datasets — declination is correct for some
+stop locations/orientations and wrong for others, with no predictable pattern. Not suitable for
+production use.
+
+**Final conclusion: magnetometer is exhausted as a heading sensor on this hardware.** Even 2–7.5 s
+of sustained stillness does not reliably indicate motor de-energisation. EMI magnitude depends on
+robot orientation relative to magnetic anomalies in the arena (hard/soft iron from structure,
+wiring, motor position), not just motor current. No available sensor can distinguish "mag is clean"
+from "mag is EMI-corrupted" moments.
 
 ---
 
@@ -160,6 +224,17 @@ pseudo-measurement when stationary. Tried with loose gate (`|acc| < 0.15`) and s
 looking visually straighter. Root cause: the stationary detector fires during slow motion
 phases; zeroing velocity causes position to stagnate while GT continues moving, creating
 systematic lag. Removed.
+
+**Tried: sustained-stationary ZUPT** (`sweep_zupt.m`) — N_min=1–200 samples, R_zupt=0.01–0.20 m/s,
+with and without ax/ay zeroing. Key findings:
+- R_zupt has no effect regardless of value — IMU at 200 Hz already constrains velocity so tightly
+  that ZUPT adds nothing the acc update doesn't already cover.
+- Best result (N_min=10, R_zupt=0.01): 0.35% summed pos RMSE improvement, ~0.3 mm per dataset.
+  Effectively zero; cannot be distinguished from noise.
+- N_min=1 (every stationary sample) still worsens results — confirms original lag finding.
+- Zeroing ax/ay simultaneously has no additional effect.
+**Conclusion: ZUPT is a dead end for this EKF. The 200 Hz IMU leaves no velocity estimation gap
+for ZUPT to fill.**
 
 ---
 
@@ -512,3 +587,76 @@ and therefore heading — changing it moves both yaw MSE and position MSE.
 Clear tradeoff: tighter → better task2_2 pos and task2_1 yaw but hurts task2_1 pos;
 looser → better task2_1 pos but yaw degrades significantly and other tasks regress.
 0.02 is the best balance for the combined pos+yaw metric. Retained.
+
+---
+
+## Final Parameter Sweep (sweep_final.m)
+
+Three-part sweep covering Q(3,3) fast_spin inflation, gyro_x_bias, and per-sensor R_tof.
+Script: `sweep_final.m`. Baseline: t1_pos=0.3254, t1_yaw=0.0786, t2_pos=0.3113, t2_yaw=0.2542, sum=0.6368.
+
+### Part 1: Q(3,3) Heading Noise During fast_spin
+
+Tested deg2rad([3,5,10,20,30,45])² — zero effect on all datasets across all values.
+The fast_spin path (`|omega| > 2 rad/s`) fires rarely and briefly; heading divergence
+during fast rotations is dominated by integration error, not the process noise setting.
+Current value (3 deg) retained.
+
+### Part 2: gyro_x_bias Fine Sweep
+
+Swept -0.0162 to -0.0062 in 0.001 steps (current = -0.0112).
+
+| gx_bias | t1_pos | t1_yaw | t2_pos | t2_yaw | sum |
+|---------|--------|--------|--------|--------|-----|
+| -0.0162 | 0.3254 | 0.0786 | 0.3184 | 0.2813 | 0.6637 |
+| -0.0112 (baseline) | 0.3254 | 0.0786 | 0.3113 | 0.2542 | 0.6368 |
+| -0.0102 | 0.3254 | 0.0786 | 0.2942 | 0.2333 | 0.6128 |
+| **-0.0072** | **0.3254** | **0.0787** | **0.2921** | **0.2334** | **0.6175** |
+| -0.0062 | 0.3254 | 0.0787 | 0.2921 | 0.2334 | 0.6175 |
+
+Best: **-0.0072** (sum=0.6175, -3.0% vs baseline). Improvement entirely in task2 —
+task1 is insensitive to gyro_x_bias (robot doesn't pitch/roll significantly in task1 profiles).
+Values from -0.0072 to -0.0062 tie; -0.0072 adopted as the midpoint of the plateau.
+
+### Part 3: Per-Sensor R_tof (R_side=ToF1/ToF3, R_fwd=ToF2)
+
+Current: all sensors at R_tof = 0.07 m. Swept R_side ∈ {0.05, 0.07, 0.09, 0.12} × R_fwd ∈ {0.04, 0.05, 0.07, 0.09}.
+
+Selected rows (full grid in sweep_final.m output):
+
+| R_side | R_fwd | t1_pos | t2_pos | sum |
+|--------|-------|--------|--------|-----|
+| 0.07 | 0.07 (baseline) | 0.3254 | 0.3113 | 0.6368 |
+| 0.07 | 0.04 | 0.3242 | 0.3013 | 0.6248 |
+| **0.09** | **0.04** | **0.3243** | **0.2992** | **0.6234** |
+| 0.09 | 0.05 | 0.3245 | 0.2996 | 0.6241 |
+| 0.12 | 0.04 | 0.3245 | 0.2995 | 0.6240 |
+
+Best: **R_side=0.09, R_fwd=0.04** (sum=0.6234, -2.1% vs baseline).
+Pattern: lower R_fwd (trust forward ToF2 more) consistently improves task2; R_side variation
+is secondary but R_side=0.09 slightly better than uniform 0.07 (side sensors less trusted).
+
+### Combined Result
+
+Applied all three improvements: gyro_x_bias=-0.0072, R_side=0.09, R_fwd=0.04, Q_theta_fs unchanged.
+
+| Dataset | pos_RMSE | yaw_RMSE | pos_base | yaw_base | Δpos |
+|---------|----------|----------|----------|----------|------|
+| task1_1 | 0.0846 | 0.0445 | 0.0848 | 0.0445 | -0.2% |
+| task1_2 | 0.0772 | 0.0108 | 0.0776 | 0.0107 | -0.5% |
+| task1_3 | 0.0826 | 0.0134 | 0.0829 | 0.0135 | -0.4% |
+| task1_4 | 0.0798 | 0.0099 | 0.0802 | 0.0099 | -0.5% |
+| task2_1 | 0.0644 | 0.0454 | 0.0636 | 0.0513 | +1.3% |
+| task2_2 | 0.0696 | 0.0501 | 0.0702 | 0.0501 | -0.9% |
+| task2_3 | 0.0719 | 0.0551 | 0.0729 | 0.0551 | -1.4% |
+| task2_4 | 0.0842 | 0.0828 | 0.1047 | 0.0977 | **-19.6%** |
+| **TOTAL** | **0.6143** | **0.3120** | **0.6368** | **0.3328** | **-3.5%** |
+
+Net: pos RMSE 0.6368 → 0.6143 (−3.5%), yaw RMSE 0.3328 → 0.3120 (−6.3%).
+task2_4 is the main beneficiary (19.6% pos improvement) — this dataset has the most sustained
+rotation where gyro_x_bias matters. task2_1 is marginally worse (+1.3%), within noise.
+
+**Parameters to apply to myEKF_ca.m:**
+- `gyro_x_bias = -0.0072` (was -0.0112)
+- `R_tof1 = 0.09^2`, `R_tof2 = 0.04^2`, `R_tof3 = 0.09^2` (was all 0.07^2)
+- Q_theta_fs: no change

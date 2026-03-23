@@ -98,12 +98,12 @@ if isempty(initialised)
     % --- IMU measurement noise  z = [acc_bx, acc_by, omega] -------------
     R_imu = diag([ 0.50, 0.50, 0.02 ].^2);
 
-    % --- ToF measurement noise [m^2] -------------------------------------
-    R_tof = (0.07)^2;
+    % --- ToF measurement noise [m^2] (per-sensor: side=ToF1/3, fwd=ToF2) --
+    R_tof = [(0.09)^2; (0.04)^2; (0.09)^2];
 
     % --- Sensor Calibrations ---------------------------------------------
     acc_x_bias = 0.0275;      acc_y_bias = -0.41;
-    gyro_x_bias = -0.0112;    gyro_y_bias = -0.0013;
+    gyro_x_bias = -0.0072;    gyro_y_bias = -0.0013;
     % Mag biases retained only for step-1 heading initialisation
     mag_x_bias = -5.475113e-05; mag_y_bias = 7.017891e-05;
 
@@ -298,7 +298,7 @@ for s = 1:3 * do_tof
     else
         inc_cos = max(abs(sin(ray_world)), 0.30);
     end
-    R_tof_a = R_tof / inc_cos^2;
+    R_tof_a = R_tof(s) / inc_cos^2;
 
     nu_tof = tof_d(s) - h_pred;
     S_tof  = H_tof * P_u * H_tof' + R_tof_a;
