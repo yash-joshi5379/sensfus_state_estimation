@@ -125,7 +125,7 @@ for d = 1:size(datasets, 1)
     % ylabel('vy [m/s]'); xlabel('Sample');
     % title(['Velocity Y — ' TAG]); legend; hold off;
     % saveas(gcf, [TAG '_velocity.jpg']);
-    close all;
+    if ~SHOW_FIGURES; close all; end
 end
 
 %% --- Summary table ---

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(matlab -batch *)",
-      "Bash(\"C:/Program Files/MATLAB/R2025a/bin/matlab.exe\" -batch *)",
-      "Bash(\"C:/Program Files/MATLAB/R2025a/bin/matlab.exe\" -batch \"cd\\('C:/Users/hsken/c_dev/sensfus_state_estimation'\\); addpath\\('src'\\); run_ekf_test\" 2>&1)"
-    ]
-  }
-}

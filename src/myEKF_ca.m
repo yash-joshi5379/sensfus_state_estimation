@@ -72,9 +72,9 @@ if isempty(initialised)
     %   Row i = [dx_fwd, dy_left]
     %     dx_fwd  > 0  →  toward robot front
     %     dy_left > 0  →  toward robot left side
-    tof_offsets = [ 0.0,  0.04;   % ToF1 – right-facing
-                    -0.09, 0.00;   % ToF2 – forward-facing
-                    0.0, -0.04];  % ToF3 – left-facing
+    tof_offsets = [ 0.00,  0.03;   % ToF1 – right-facing
+                    -0.02,  0.00;   % ToF2 – forward-facing
+                    0.00, -0.03];  % ToF3 – left-facing
 
     % --- ToF firing angles relative to body forward axis [rad] -----------
     tof_phi = [pi/2; pi; -pi/2];   % right, forward, left (body x points backward)
@@ -92,17 +92,17 @@ if isempty(initialised)
 
     % --- Process noise Q -------------------------------------------------
     Q = diag([ 5e-3, 5e-3, deg2rad(3), ...   % x, y, theta
-               0.05, 0.05, 0.10,       ...   % vx, vy, omega
-               0.15, 0.15, 3e-3 ].^2);       % ax, ay, b_omega (random walk — allows motors-on bias shift)
+               0.10, 0.10, 0.10,       ...   % vx, vy, omega
+               0.25, 0.25, 3e-3 ].^2);       % ax, ay, b_omega (random walk — allows motors-on bias shift)
 
     % --- IMU measurement noise  z = [acc_bx, acc_by, omega] -------------
     R_imu = diag([ 0.50, 0.50, 0.02 ].^2);
 
     % --- ToF measurement noise [m^2] -------------------------------------
-    R_tof = (0.10)^2;
+    R_tof = (0.07)^2;
 
     % --- Sensor Calibrations ---------------------------------------------
-    acc_x_bias = 0.0275;      acc_y_bias = -0.3963;
+    acc_x_bias = 0.0275;      acc_y_bias = -0.41;
     gyro_x_bias = -0.0112;    gyro_y_bias = -0.0013;
     % Mag biases retained only for step-1 heading initialisation
     mag_x_bias = -5.475113e-05; mag_y_bias = 7.017891e-05;
@@ -199,7 +199,7 @@ b_p  = X_p(9);
 % acc measurement and projects into world-frame ax/ay → position drift.
 % Inflate acc noise channels so the filter ignores acc for translation when spinning.
 if fast_spin
-    R_imu_cur = diag([ 5.0, 5.0, 0.02 ].^2);   % distrust acc, keep gyro
+    R_imu_cur = diag([ 1.0, 1.0, 0.02 ].^2);   % distrust acc, keep gyro
 else
     R_imu_cur = R_imu;
 end

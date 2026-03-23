@@ -33,6 +33,19 @@ This constrains the `ax`, `ay` world-frame states which drive position predictio
 The horizontal accelerometer axes carry zero gravity component regardless of yaw —
 accelerometers cannot observe yaw rotation.
 
+**R_imu acc sweep:** Tried 0.05, 0.20, 0.30, 0.50 (all values). No measurable effect on any
+dataset. The ToF updates dominate position accuracy; the IMU acc noise only affects how
+aggressively the filter pins the `ax`/`ay` world-frame states between ToF steps, which is
+swamped by the ToF correction. 0.50 retained (conservative / safe choice).
+
+**IMU direction / bias sweep:** Tested all sign combinations for acc(2), acc(3), acc_x_bias,
+acc_y_bias. Results:
+- Flip acc(3) sign (y direction): catastrophic across all tasks (task2_1 pos_MSE ×50)
+- Flip acc(2) sign (x direction): universally worse (~10% degradation)
+- Flip acc_y_bias sign: catastrophic (same pattern as flipping y direction)
+- Flip acc_x_bias sign: universally worse (acc_x_bias=0.0275 is tiny so effect is small but still negative)
+Current configuration (-acc(2), +acc(3), -biases) is confirmed optimal.
+
 **During `fast_spin`:** Acc noise inflated from R = (0.5)² to (5.0)² m²/s⁴.
 Reason: centripetal acceleration during fast rotation is a real physical signal in body frame
 but projects to world-frame `ax`, `ay` and drives position drift. Inflating acc noise
@@ -40,8 +53,25 @@ makes the filter ignore the acceleration measurement during spin. `fast_spin` is
 using raw `gyro_z` (not the estimated `omega` state, which starts at 0 even if the robot is
 already spinning at initialisation).
 
-**Process noise:** `Q(7,7) = Q(8,8) = (0.15)²` — reduced from `(0.30)²` to limit acc noise
-bleeding into position via P off-diagonal covariance terms.
+**Process noise:** `Q(7,7) = Q(8,8) = (0.25)²` — see Q sweep below.
+
+**acc_y_bias refinement:** Original value -0.3963 was calibrated from static data. Sweep
+around ±0.04 revealed -0.41 is the best combined pos+yaw optimum.
+
+| acc_y_bias | task2_1_pos | task2_1_yaw | task2_2_pos | task2_3_pos | task2_3_yaw |
+|------------|-------------|-------------|-------------|-------------|-------------|
+| -0.37 | 0.0034 | 0.0153 | 0.0046 | 0.0044 | 0.0032 |
+| -0.3963 (old) | 0.0040 | 0.0032 | 0.0049 | 0.0057 | 0.0037 |
+| **-0.41** | **0.0040** | **0.0026** | **0.0049** | **0.0053** | **0.0030** |
+| -0.42 | 0.0031 | 0.0091 | 0.0051 | 0.0048 | 0.0034 |
+| -0.43 | 0.0035 | 0.0159 | 0.0053 | 0.0048 | 0.0035 |
+
+The acc biases interact with heading through the H_imu rotation matrix (R(θ) maps world-frame
+acc to body frame), so changing acc_y_bias indirectly affects the Kalman gain on omega/b_omega
+and thus heading. -0.41 improves task2_3 position (0.0057→0.0053) and yaw (0.0037→0.0030),
+and task2_1 yaw (0.0032→0.0026), without degrading anything else.
+
+**acc_x_bias = 0.0275** confirmed optimal — perturbations in both directions degraded yaw.
 
 ---
 
@@ -62,6 +92,22 @@ shifts (motor EMI), causing heading drift over long runs.
 `gyro_scale = 1.1` corrects ~10% over-integration observed in task datasets.
 Note: at 1.02 the straight dataset was near-perfect but task datasets under-integrated;
 1.1 is the best single constant across all datasets.
+
+**Gyro scale sweep (automated, task2_X pos_MSE):**
+
+| Scale | task2_1 | task2_2 | task2_3 | Notes |
+|-------|---------|---------|---------|-------|
+| 1.05  | 0.0337  | 0.0118  | 0.0078  | task2_1 broken |
+| 1.07  | 0.0192  | 0.0104  | 0.0078  | task2_1 still broken |
+| 1.09  | 0.0127  | 0.0103  | 0.0078  | task2_1 improving, 2&3 better |
+| **1.10**  | **0.0099**  | **0.0105**  | **0.0086**  | **baseline — best overall** |
+| 1.11  | 0.0082  | 0.0106  | 0.0087  | task2_1 pos improves but yaw 0.0073 (×2) |
+| 1.12  | 0.0067  | 0.0111  | 0.0088  | task2_1 yaw 0.0193 (×6), corner spikes massive |
+| 1.15  | 0.0116  | 0.0140  | 0.0092  | everything worse |
+
+Above 1.10, task2_1 pos_MSE artificially improves because the TOF compensates for an
+over-rotating heading — the position plot shows severe corner spike clusters confirming
+the lower MSE is deceptive. 1.10 retained.
 
 ---
 
@@ -131,10 +177,37 @@ Range predicted via ray–wall intersection with analytical Jacobians `[dh/dsx, 
 Rejects outliers from wall holes, corners, and reflections. Tighter gate reduces sawtooth
 position artifacts caused by borderline outliers pulling position in transient wrong directions.
 
-**R_tof = (0.15)²** — base noise, increased from (0.05)² to reduce the magnitude of each
-individual ToF correction. Root cause of position sawtooth: slightly-off heading estimate +
-noisy ToF readings cause consecutive updates to pull position in slightly different directions.
-Higher R_tof makes the filter lean more on the kinematic model between updates.
+Chi² sweep result: 4.0 is optimal. Above 4.0 (tested 6.0) makes no difference — wall-ambiguity
+and corner-margin checks already filter the worst readings before they reach the gate. Below 4.0
+(tested 3.5, 3.0, 2.0) progressively rejects valid readings and degrades all tasks. 4.0 retained.
+
+**Re-sweep after ToF offset calibration fix** (R_tof=0.07, corrected geometry): chi2 behaviour
+unchanged — insensitive ≥4.0, cliff between 3.5 and 4.0 (task2_3 0.0057→0.0085 at 3.5).
+4.0 confirmed as the minimum safe threshold regardless of sensor calibration quality.
+
+**R_tof = (0.07)²** — ToF measurement noise. (Was `(0.10)²` before ToF offset fix.)
+
+**Original sweep** (with wrong ToF2 dx=-0.09):
+
+| R_tof | task1_2 | task1_3 | task2_1 | task2_2 | task2_3 |
+|-------|---------|---------|---------|---------|---------|
+| 0.07  | 0.0108  | 0.0113  | 0.0095  | 0.0123  | 0.0109  |
+| 0.09  | 0.0109  | 0.0115  | 0.0095  | 0.0096  | 0.0082  |
+| 0.10 (was best) | 0.0110 | 0.0116 | 0.0094 | 0.0096 | 0.0082 |
+| 0.15 (old) | 0.0113 | 0.0120 | 0.0094 | 0.0098 | 0.0085 |
+
+**Re-sweep after ToF offset fix** (with corrected dx=-0.02):
+
+| R_tof | task1_2 | task1_3 | task2_1 | task2_2 | task2_3 | sum |
+|-------|---------|---------|---------|---------|---------|-----|
+| 0.05 | 0.0060 | 0.0068 | 0.0039 | 0.0050 | 0.0057 | 0.0274 |
+| 0.06 | 0.0060 | 0.0068 | 0.0039 | 0.0050 | 0.0057 | 0.0274 |
+| **0.07** | **0.0060** | **0.0069** | **0.0039** | **0.0049** | **0.0057** | **0.0274** |
+| 0.10 (old) | 0.0061 | 0.0070 | 0.0040 | 0.0049 | 0.0058 | 0.0278 |
+
+With corrected geometry, tighter R_tof is uniformly better — the residuals are now small and
+genuine, so trusting them more helps. Plateau at 0.05–0.07; 0.07 chosen (best task2_2, round-ish).
+The old 0.10 optimum was partially compensating for the systematic offset in h_pred.
 
 **Incidence-angle-adaptive R_tof:** `R_tof_a = R_tof / max(inc_cos, 0.30)²` where `inc_cos`
 is `|cos(ray)|` for x-wall hits and `|sin(ray)|` for y-wall hits. At perpendicular incidence
@@ -162,14 +235,37 @@ Multiple attempts, all catastrophic:
 - task1_1's wrong-initial-heading problem must be solved another way.
 
 **Wall ambiguity check:** Added in `tof_measurement` — if the two shortest ray-wall distances
-satisfy `t_second < 1.30 × t_first`, measurement is rejected. Near arena corners or when the
+satisfy `t_second < 1.20 × t_first`, measurement is rejected. Near arena corners or when the
 sensor fires at 45°, a small heading error flips which wall is selected, producing a
-discontinuous ~1–2 m jump in h_pred. Threshold 1.30 (up from 1.15) retained — marginally
-helps suppress corner artifacts without rejecting too many valid readings.
+discontinuous ~1–2 m jump in h_pred.
 
-**Corner margin:** `corner_margin = 0.2 m` — if the ray hit-point is within 0.2 m of a corner
-(both `|hit_x| > Lx - 0.2` and `|hit_y| > Ly - 0.2`), reading is discarded. Reduces but does
-not fully eliminate the lower-corner excursions seen in task2_1 and task2_2.
+Wall ambiguity threshold sweep (with R_tof=0.10, corner_margin=0.1):
+
+| Threshold | task2_1 | task2_2 | task2_3 | sum |
+|-----------|---------|---------|---------|-----|
+| 1.10      | crash   | —       | —       | —   |
+| **1.20**  | **0.0095** | **0.0095** | **0.0081** | **0.0271** |
+| 1.25      | 0.0095  | 0.0096  | 0.0082  | 0.0273 |
+| 1.30 (old)| 0.0094  | 0.0096  | 0.0082  | 0.0272 |
+| 1.40      | 0.0091  | 0.0099  | 0.0084  | 0.0274 |
+| 1.50      | 0.0094  | 0.0099  | 0.0087  | 0.0280 |
+
+1.20 wins marginally on sum; 1.10 causes EKF divergence (too many rejections → open-loop drift).
+Differences are small (0.0001 level) but 1.20 is consistently best.
+
+**Corner margin:** `corner_margin = 0.1 m` — if the ray hit-point is within 0.1 m of a corner
+(both `|hit_x| > Lx - 0.1` and `|hit_y| > Ly - 0.1`), reading is discarded.
+
+Corner margin sweep result: lower is better; gains plateau below 0.1 (wall-ambiguity check
+already rejects most bad corner readings). 0.0 (disabled) gives negligible further improvement.
+
+| margin | task2_1 | task2_2 | task2_3 |
+|--------|---------|---------|---------|
+| 0.0    | 0.0095  | 0.0097  | 0.0084  |
+| 0.05   | 0.0095  | 0.0097  | 0.0085  |
+| **0.1**    | **0.0094**  | **0.0098**  | **0.0085**  |
+| 0.2 (old)  | 0.0099  | 0.0105  | 0.0086  |
+| 0.3    | 0.0108  | 0.0135  | 0.0099  |
 
 **Things tried for corner/turn artifacts — not adopted:**
 - Absolute residual cap `|nu_tof| > 0.40 m` (all steps): broke valid turn tracking, reverted.
@@ -242,3 +338,155 @@ X_u(2) = max(-Ly + 0.05, min(Ly - 0.05, X_u(2)));
 Prevents position from escaping the arena. Without this, a heading error eventually makes
 `h_pred ≤ 0` (ray parallel to or away from all walls), skipping all ToF updates and allowing
 unbounded open-loop drift.
+
+---
+
+## Arena Dimensions
+
+`Lx = Ly = 1.22 m` confirmed accurate. Swept ±0.01 m (1.21, 1.22, 1.23) — no consistent
+improvement in either direction. 1.22 is the true physical arena half-width.
+
+---
+
+## Process Noise Q Sweep
+
+Final Q (after sweep):
+```
+Q = diag([ 5e-3, 5e-3, deg2rad(3),   % x, y, theta
+           0.10, 0.10, 0.10,          % vx, vy, omega
+           0.25, 0.25, 3e-3 ].^2)
+```
+
+**Q_vx/vy sweep** (Q_ax/ay=0.15, all other params at tuned baseline):
+
+| Q_vx/vy | task1_2 | task1_3 | task2_1 | task2_2 | task2_3 |
+|---------|---------|---------|---------|---------|---------|
+| 0.02    | 0.0121  | 0.0130  | 0.0095  | 0.0100  | 0.0088  | worse
+| **0.05 (old)** | **0.0110** | **0.0116** | **0.0095** | **0.0095** | **0.0081** | baseline
+| **0.10** | **0.0107** | **0.0112** | **0.0096** | **0.0095** | **0.0079** | best
+| 0.20    | 0.0107  | 0.0111  | 0.0100  | 0.0097  | 0.0079  | task2_1 regresses
+
+0.10 is the sweet spot — task1 consistently improves (~3%), task2 neutral or marginal improvement.
+Lower values (0.02) over-constrain velocity, causing the model to reject valid correction;
+higher values (0.20) let velocity noise bleed into position without benefit.
+
+**Q_ax/ay sweep** (Q_vx/vy=0.10):
+
+| Q_ax/ay | task1_2 | task1_3 | task2_1 | task2_2 | task2_3 |
+|---------|---------|---------|---------|---------|---------|
+| 0.10    | 0.0107  | 0.0112  | 0.0096  | 0.0095  | 0.0079  |
+| 0.15    | 0.0107  | 0.0112  | 0.0096  | 0.0095  | 0.0079  |
+| **0.25** | **0.0107** | **0.0112** | **0.0096** | **0.0094** | **0.0079** | marginal win
+| 0.30    | 0.0107  | 0.0112  | 0.0096  | 0.0094  | 0.0079  |
+
+Q_ax/ay is largely insensitive — position dominated by ToF updates; the acc model between
+ToF steps has little effect. 0.25 chosen for marginal task2_2 improvement (0.0095→0.0094).
+
+**Q_omega / Q_theta sweeps:** Not performed. Yaw MSE is completely frozen across all
+Q variations (gyro measurement at 200 Hz dominates heading dynamics; process noise is
+irrelevant vs the measurement update rate). Changing Q_omega or Q_theta has no measurable effect.
+
+**Re-sweep after all calibration fixes:** Q_vx/vy=0.10 and Q_ax/ay=0.25 both re-confirmed
+optimal. The error landscape changed dramatically after ToF offset fix but Q optima did not
+shift — Q governs model trust relative to measurements; fixing geometry reduces absolute errors
+but not the relative dynamics between prediction and measurement update.
+
+---
+
+## fast_spin Parameter Sweeps
+
+`fast_spin` is detected via `|gyro_z| > threshold`, and triggers: (1) inflated Q_pos to widen
+the chi2 gate, and (2) inflated R_acc to distrust centripetal contamination in the accelerometer.
+
+**Threshold sweep** (0.3, 0.5, 0.7, 1.0 rad/s):
+
+| Threshold | task2_1 | task2_2 | task2_3 | sum |
+|-----------|---------|---------|---------|-----|
+| 0.3 | 0.0093 | 0.0097 | 0.0079 | 0.0269 |
+| **0.5** | **0.0096** | **0.0094** | **0.0079** | **0.0269** |
+| 0.7 | 0.0094 | 0.0097 | 0.0079 | 0.0270 |
+| 1.0 | 0.0097 | 0.0100 | 0.0079 | 0.0276 |
+
+Insensitive between 0.3–0.5 (same sum), degrades above. 0.5 retained — most datasets have
+fast spins well above 0.5 rad/s so there is no risk of premature triggering.
+
+**fast_spin Q_pos sweep** (`(0.10)²` to `(0.30)²`):
+Insensitive — all results within noise of baseline. 0.15 retained.
+
+**fast_spin R_acc sweep** (inflation during spin):
+
+| R_acc | task2_1 | task2_2 | task2_3 | sum |
+|-------|---------|---------|---------|-----|
+| 0.5 (no inflation) | 0.0092 | 0.0094 | 0.0079 | 0.0265 |
+| **1.0** | **0.0093** | **0.0094** | **0.0078** | **0.0265** |
+| 2.0 | 0.0094 | 0.0094 | 0.0078 | 0.0266 |
+| 5.0 (old) | 0.0096 | 0.0094 | 0.0079 | 0.0269 |
+| 10.0 | 0.0097 | 0.0095 | 0.0080 | 0.0272 |
+
+Lower inflation is better — the original (5.0)² was overcorrecting. 1.0 retained: task2_3 gets
+0.0078 (vs 0.0079 for no inflation) while being a mild, principled signal of reduced confidence.
+The centripetal contamination assumption was overstated; mild caution (2× std) is sufficient.
+
+---
+
+## ToF Sensor Offset Calibration
+
+**Critical finding: ToF2 forward offset was severely miscalibrated.**
+
+Original `tof_offsets(2, 1) = -0.09 m`. Sweep showed the true offset is ~-0.02 m — the sensor
+is much closer to the robot centre than assumed. The 7 cm error added a systematic bias to every
+forward-sensor range prediction, and corrupted the chi2 gate residuals.
+
+**ToF2 dx_fwd sweep** (holding ToF1/3 at `[0, ±0.04]`):
+
+| dx (m) | task1_2 | task1_3 | task2_1 | task2_2 | task2_3 | sum |
+|--------|---------|---------|---------|---------|---------|-----|
+| -0.09 (old) | 0.0107 | 0.0112 | 0.0096 | 0.0094 | 0.0079 | 0.0488 |
+| -0.07 | 0.0084 | 0.0090 | 0.0070 | 0.0074 | 0.0064 | 0.0382 |
+| -0.05 | 0.0069 | 0.0076 | 0.0053 | 0.0059 | 0.0056 | 0.0313 |
+| -0.03 | 0.0062 | 0.0070 | 0.0044 | 0.0050 | 0.0056 | 0.0282 |
+| **-0.02** | **0.0061** | **0.0070** | **0.0041** | **0.0049** | **0.0058** | **0.0279** |
+| -0.01 | 0.0062 | 0.0071 | 0.0041 | 0.0049 | 0.0061 | 0.0284 |
+| 0.00 | 0.0066 | 0.0075 | 0.0043 | 0.0050 | 0.0066 | 0.0300 |
+
+-0.02 is optimal. Task2_3 peaks around -0.03; task2_1/2 continue improving to -0.02 then level off.
+
+**ToF1/3 side offset (dy) sweep** (holding ToF2 at -0.02):
+
+| dy (m) | task2_1 | task2_2 | task2_3 | sum |
+|--------|---------|---------|---------|-----|
+| ±0.02 | 0.0039 | 0.0050 | 0.0059 | 0.0148 |
+| **±0.03** | **0.0040** | **0.0049** | **0.0058** | **0.0147** |
+| ±0.04 (old) | 0.0041 | 0.0049 | 0.0058 | 0.0148 |
+| ±0.05 | 0.0043 | 0.0049 | 0.0057 | 0.0149 |
+
+Marginally insensitive — ±0.03 best on sum. Differences at 0.0001 level. ±0.03 adopted.
+
+**Fine resolution check on ToF2 dx** (±0.005 m around -0.02): tried -0.015 and -0.025.
+Both worse — -0.02 confirmed at 5 mm resolution.
+
+**Final offsets:**
+```matlab
+tof_offsets = [ 0.00,  0.03;   % ToF1 – right-facing
+               -0.02,  0.00;   % ToF2 – forward-facing
+                0.00, -0.03];  % ToF3 – left-facing
+```
+
+---
+
+## R_imu Gyro Noise Sweep
+
+`R_imu(3,3)` controls how tightly the filter trusts the gyro for `omega`. Unlike acc noise
+(which is ToF-dominated and insensitive), gyro noise actively affects `b_omega` estimation
+and therefore heading — changing it moves both yaw MSE and position MSE.
+
+| R_gyro | task2_1_pos | task2_1_yaw | task2_2_pos | task2_2_yaw | task2_3_pos |
+|--------|-------------|-------------|-------------|-------------|-------------|
+| 0.01 | 0.0050 | **0.0019** | **0.0045** | 0.0022 | 0.0056 |
+| **0.02** | **0.0040** | 0.0032 | 0.0049 | **0.0023** | **0.0058** |
+| 0.03 | 0.0036 | 0.0045 | 0.0051 | 0.0026 | 0.0061 |
+| 0.05 | 0.0034 | 0.0065 | 0.0053 | 0.0033 | 0.0063 |
+
+Clear tradeoff: tighter → better task2_2 pos and task2_1 yaw but hurts task2_1 pos;
+looser → better task2_1 pos but yaw degrades significantly and other tasks regress.
+0.02 is the best balance for the combined pos+yaw metric. Retained.
