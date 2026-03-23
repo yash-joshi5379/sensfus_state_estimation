@@ -308,6 +308,28 @@ With no ongoing heading correction, `theta` drifts with gyro bias error:
 **b_omega state** partially addresses this during stationary phases but cannot correct
 drift accumulated during motor operation.
 
+**Additional approaches tried and rejected:**
+
+5. **Temperature compensation:** Temp sensor available but useless — only ~0.3°C variation
+   across all datasets, correlation with gyro_z < 0.05 on all runs. Bias drift is purely
+   EMI-driven, not thermal.
+
+6. **Adaptive gyro_scale_fast:** Separate `gyro_scale` for `fast_spin` phases (swept 0.90–1.15).
+   Below 1.1 catastrophically under-integrates (task2_1 pos_MSE ×10). Above 1.1 improves
+   pos on some tasks but yaw explodes on others. The EMI effect is a bias offset, not a scale
+   error — a different scale during spin cannot fix it. Reverted to `gyro_scale_fast = 1.1`.
+
+7. **Slow b_omega drift during motion (`Q_bomega_motion > 0`):** Tried 1e-7 to 1e-5. Without
+   a correction signal during motion the random walk drifts randomly toward or away from the
+   true bias — results are inconsistently mixed at every value. Never better than frozen.
+   Reverted to 0.
+
+8. **Velocity-direction heading constraint:** When translating (low omega, low vy_body),
+   apply `theta ≈ atan2(vy, vx)` as a soft pseudo-measurement (R = (15°)²). Catastrophic —
+   destroyed heading on all tasks. Root causes: (a) EKF velocity is derived from the same
+   theta being corrected (circular dependency); (b) mecanum strafing means velocity direction
+   ≠ heading even during apparently forward motion. Removed entirely.
+
 **task1_1 specific issue:** GT heading injected via `fake_mag` in `run_ekf_test.m` is wrong
 at t=0 for this dataset. With no ongoing heading correction, the error persists for the entire
 run. pos_MSE ≈ 1.077, yaw_MSE ≈ 2.605 — all other tasks are < 0.015 pos_MSE. The bad initial

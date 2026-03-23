@@ -64,7 +64,7 @@ if isempty(initialised)
 
     % --- Raw-sensor scaling ----------------------------------------------
     acc_scale       = 1.0;     % multiply raw acc  to get [m/s^2]
-    gyro_scale      = 1.1;   % reduced from 1.05: task datasets show ~3% over-integration per revolution
+    gyro_scale      = 1.1;   % reduced from 1.05: task datasets show ~3% over-integration per revolution  % b_omega process noise during motion (0 = frozen); sweep 1e-5 to 1e-3   % scale applied during fast_spin (|gyro_z| > 0.5); sweep independently
     mag_declination        = 1.168;    % calibrated from full rotation dataset [rad]
     mag_declination_static = -1.4245;  % calibrated from calib2_straight static frames [rad]
 
@@ -123,7 +123,7 @@ do_tof = (mod(step, tof_update_freq) == 0);   % true every 20th call (10 Hz)
 % Board upended: robot horizontal plane on sensor indices 2 & 3
 acc_bx = -double(acc(2))  * acc_scale - acc_x_bias;    % body x-acceleration  [m/s^2]
 acc_by = double(acc(3))  * acc_scale - acc_y_bias;    % body y-acceleration  [m/s^2]
-gyro_z   = (double(gyro(1)) - gyro_x_bias) * gyro_scale;  % bias before scale
+gyro_z    = (double(gyro(1)) - gyro_x_bias) * gyro_scale;
 fast_spin = abs(gyro_z) > 0.5;
 
 % Magnetometer: one-time heading seed at step 1 only, gated on low gyro_z
@@ -182,7 +182,7 @@ elseif is_stationary_q
     Q_cur = Q;   % allow bias to drift (track slow EMI changes at rest)
 else
     Q_cur      = Q;
-    Q_cur(9,9) = 0;   % freeze bias during motion
+    Q_cur(9,9) = 0;   % freeze bias during motion — unobservable without heading reference
 end
 P_p = F * P * F' + Q_cur;
 

@@ -43,7 +43,7 @@ for d = 1:size(datasets, 1)
 
     %% --- Build fake mag + gyro to seed correct initial heading from GT ---
     % theta0: GT heading at sample 1 (EKF frame matches GT — no pi offset needed)
-    w0=gt_quat(1,1); qx0=gt_quat(1,2); qy0=gt_quat(1,3); qz0=gt_quat(1,4);
+    w0=gt_quat(3,1); qx0=gt_quat(3,2); qy0=gt_quat(3,3); qz0=gt_quat(3,4);
     theta0 = atan2(2*(w0*qz0+qx0*qy0), 1-2*(qy0^2+qz0^2));
     % Reverse the EKF seed formula: theta0 = atan2(my,mx) + mag_declination_static
     mag_declination_static = -1.4245;
