@@ -269,7 +269,7 @@ for s = 1:3 * do_tof
     sy = X_u(2) + sin(th_u)*dx_body + cos(th_u)*dy_body;
 
     % Predicted range and analytical Jacobian w.r.t. sensor pos & angle
-    [h_pred, dh_dsx, dh_dsy, dh_dth_s] = tof_measurement( ...
+    [h_pred, dh_dsx, dh_dsy, ~] = tof_measurement( ...
         sx, sy, th_u, tof_phi(s), Lx, Ly);
 
     if h_pred <= 0
@@ -287,34 +287,30 @@ for s = 1:3 * do_tof
         continue
     end
 
-    % ∂(sensor world pos)/∂theta via offset rotation
-    dsx_dth = -sin(th_u)*dx_body - cos(th_u)*dy_body;
-    dsy_dth =  cos(th_u)*dx_body - sin(th_u)*dy_body;
-
-    % Full measurement Jacobian row  H_tof [1 × 8]
-    % H_tof(3): full ∂h/∂theta — sensor position rotates with theta (first two
-    % terms) plus ray direction rotates with theta (dh_dth_s).
-    % With correct arena dimensions and working position estimate, ToF residuals
-    % now reflect true heading error rather than position error.
     H_tof    = zeros(1, 9);
     H_tof(1) = dh_dsx;
     H_tof(2) = dh_dsy;
-    H_tof(3) = 0;   % heading excluded: dh/dtheta can be several m/rad at oblique angles;
-                    % tiny R_tof means any position residual drives enormous heading spikes.
+    % H_tof(3) intentionally zero — see design notes, do not re-enable
+
+    % Incidence-angle-adaptive R_tof (floor 0.30, max ~11× inflation)
+    if abs(dh_dsx) > 1e-9
+        inc_cos = max(abs(cos(ray_world)), 0.30);
+    else
+        inc_cos = max(abs(sin(ray_world)), 0.30);
+    end
+    R_tof_a = R_tof / inc_cos^2;
 
     nu_tof = tof_d(s) - h_pred;
-    S_tof  = H_tof * P_u * H_tof' + R_tof;
+    S_tof  = H_tof * P_u * H_tof' + R_tof_a;
 
-    % Mahalanobis gate — rejects outliers (holes in walls, reflections, etc.)
     if (nu_tof^2 / S_tof) > chi2_thresh
         continue
     end
 
-    K_tof    = P_u * H_tof' / S_tof;
-    K_tof(3) = 0;   % zero to match H(3)=0 and maintain P symmetry
-    X_u      = X_u + K_tof * nu_tof;
+    K_tof = P_u * H_tof' / S_tof;
+    X_u   = X_u + K_tof * nu_tof;
     X_u(3) = wrapToPi(X_u(3));
-    P_u    = (eye(9) - K_tof * H_tof) * P_u;
+    P_u   = (eye(9) - K_tof * H_tof) * P_u;
 end
 
 % =========================================================================
@@ -362,6 +358,15 @@ function [h, dh_dsx, dh_dsy, dh_dth_s] = tof_measurement(sx, sy, th, phi_s, Lx, 
     end
 
     t(t <= 1e-6) = inf;            % discard behind-sensor intersections
+
+    % Reject if two walls are nearly equidistant: wall assignment is fragile
+    % and a small heading error flips it, causing a discontinuous h_pred jump.
+    t_valid = sort(t(t < inf));
+    if length(t_valid) >= 2 && t_valid(2) < 1.30 * t_valid(1)
+        h = -1;  dh_dsx = 0;  dh_dsy = 0;  dh_dth_s = 0;
+        return
+    end
+
     [h, wall] = min(t);
 
     if isinf(h)

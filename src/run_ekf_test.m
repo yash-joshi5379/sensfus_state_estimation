@@ -2,7 +2,7 @@
 % Standalone test script for myEKF_ca — bypasses Simulink for fast iteration.
 % Runs both calibration datasets and saves plots.
 
-clc; clear;
+clear;
 
 datasets = { ...
     'data\task1_1 1.mat',       'task1_1' ; ...
