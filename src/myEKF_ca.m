@@ -99,7 +99,7 @@ if isempty(initialised)
     R_imu = diag([ 0.50, 0.50, 0.02 ].^2);
 
     % --- ToF measurement noise [m^2] -------------------------------------
-    R_tof = (0.15)^2;
+    R_tof = (0.10)^2;
 
     % --- Sensor Calibrations ---------------------------------------------
     acc_x_bias = 0.0275;      acc_y_bias = -0.3963;
@@ -282,7 +282,7 @@ for s = 1:3 * do_tof
     ray_world = th_u + tof_phi(s);
     hit_x = sx + h_pred * cos(ray_world);
     hit_y = sy + h_pred * sin(ray_world);
-    corner_margin = 0.2;
+    corner_margin = 0.1;
     if abs(hit_x) > (Lx - corner_margin) && abs(hit_y) > (Ly - corner_margin)
         continue
     end
@@ -362,7 +362,7 @@ function [h, dh_dsx, dh_dsy, dh_dth_s] = tof_measurement(sx, sy, th, phi_s, Lx, 
     % Reject if two walls are nearly equidistant: wall assignment is fragile
     % and a small heading error flips it, causing a discontinuous h_pred jump.
     t_valid = sort(t(t < inf));
-    if length(t_valid) >= 2 && t_valid(2) < 1.30 * t_valid(1)
+    if length(t_valid) >= 2 && t_valid(2) < 1.20 * t_valid(1)
         h = -1;  dh_dsx = 0;  dh_dsy = 0;  dh_dth_s = 0;
         return
     end

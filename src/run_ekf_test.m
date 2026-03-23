@@ -4,6 +4,12 @@
 
 clear;
 
+% --- Display flag ---
+% Set to true to show figures interactively (GUI use).
+% Set to false to save silently without opening windows (batch/headless use).
+SHOW_FIGURES = true;
+fig_vis = 'off'; if SHOW_FIGURES; fig_vis = 'on'; end
+
 datasets = { ...
     'data\task1_1 1.mat',       'task1_1' ; ...
     'data\task1_2 1.mat',       'task1_2' ; ...
@@ -86,20 +92,20 @@ for d = 1:size(datasets, 1)
     results(d,:) = [pos_SSE, pos_MSE, yaw_SSE, yaw_MSE];
 
     %% --- Plot: Heading ---
-    figure(2*d - 1); clf; hold on;
+    fh1 = figure('Visible', fig_vis); clf; hold on;
     plot(gt_yaw,     'b', 'DisplayName', 'GT');
     plot(X_log(:,3), 'r', 'DisplayName', 'Est');
     ylabel('Yaw [rad]'); xlabel('Sample');
     title(['Heading — ' TAG]); legend; hold off;
-    saveas(gcf, [TAG '_heading.jpg']);
+    saveas(fh1, [TAG '_heading.jpg']);
 
     %% --- Plot: Position (XY) ---
-    figure(2*d); clf; hold on;
+    fh2 = figure('Visible', fig_vis); clf; hold on;
     plot(gt_pos(:,1), gt_pos(:,2), 'b', 'DisplayName', 'GT');
     plot(X_log(:,1),  X_log(:,2),  'r', 'DisplayName', 'Est');
     xlabel('x [m]'); ylabel('y [m]');
     title(['Position — ' TAG]); axis equal; legend; hold off;
-    saveas(gcf, [TAG '_position.jpg']);
+    saveas(fh2, [TAG '_position.jpg']);
 
     %% --- Plot: Velocity ---
     % dt = 1/200;
@@ -119,6 +125,7 @@ for d = 1:size(datasets, 1)
     % ylabel('vy [m/s]'); xlabel('Sample');
     % title(['Velocity Y — ' TAG]); legend; hold off;
     % saveas(gcf, [TAG '_velocity.jpg']);
+    close all;
 end
 
 %% --- Summary table ---
