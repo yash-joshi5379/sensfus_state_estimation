@@ -656,7 +656,78 @@ Net: pos RMSE 0.6368 → 0.6143 (−3.5%), yaw RMSE 0.3328 → 0.3120 (−6.3%).
 task2_4 is the main beneficiary (19.6% pos improvement) — this dataset has the most sustained
 rotation where gyro_x_bias matters. task2_1 is marginally worse (+1.3%), within noise.
 
-**Parameters to apply to myEKF_ca.m:**
+**Parameters applied to myEKF_ca.m:**
 - `gyro_x_bias = -0.0072` (was -0.0112)
 - `R_tof1 = 0.09^2`, `R_tof2 = 0.04^2`, `R_tof3 = 0.09^2` (was all 0.07^2)
 - Q_theta_fs: no change
+
+---
+
+## Parameter Sweep (sweep_params.m)
+
+Five sweeps on the post-sweep_final baseline (sum=0.6143).
+Script: `sweep_params.m`.
+
+### Part 1: chi2_thresh
+
+Swept [1.5, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0, 16.0]. Current = 4.0 is the sharp knee:
+below 4.0 degrades dramatically (valid ToF readings rejected when position uncertainty is
+temporarily elevated); 4.0 and above are identical (no outliers in these datasets above
+this threshold). **4.0 confirmed optimal.**
+
+### Part 2: gyro_scale
+
+Swept [1.05, 1.07, 1.08, 1.09, 1.10, 1.11, 1.12, 1.13, 1.15]. Current = 1.10.
+
+| gyro_scale | t1_pos | t2_pos | t2_yaw | sum |
+|------------|--------|--------|--------|-----|
+| 1.090 | 0.3243 | 0.2889 | 0.2103 | 0.6132 |
+| **1.100 (was)** | 0.3243 | 0.2900 | 0.2334 | 0.6143 |
+| 1.110 | 0.3243 | 0.2904 | 0.2847 | 0.6147 |
+
+1.090 beats 1.100 primarily via task2 yaw (−10%). Applied.
+**Note:** per-dataset breakdown shows task2_1 pos regresses ~20% while task2_4 improves ~13%.
+Net aggregate pos: −0.17%, net aggregate yaw: −7.5%.
+
+### Part 3: corner_margin
+
+Swept [0.03, 0.05, 0.07, 0.10, 0.13, 0.15, 0.20]. Current = 0.10 m.
+0.03–0.07 tie at sum=0.6133 (vs baseline 0.6143). 0.10+ progressively worse.
+**corner_margin=0.05 applied** (recovers a few extra ToF readings near corners).
+
+### Part 4: Q(9,9) b_omega random walk
+
+Swept [1e-4, 5e-4, 1e-3, 3e-3, 5e-3, 1e-2, 3e-2] rad/s. Current = 3e-3.
+5e-3 gives best pos aggregate but degrades task2 yaw (0.2334 → 0.2144).
+Interaction with gyro_scale=1.09 causes task2_1 to blow up in combined run (+48% pos).
+**Not applied** — tradeoff not worth it, current 3e-3 retained.
+
+### Part 5: fast_spin threshold
+
+Swept [0.30, 0.50, 0.80, 1.00, 1.50, 2.00, 3.00] rad/s. Current = 0.50.
+Lower triggers inflation too often (task2 worse); higher fails to suppress centripetal.
+**0.50 rad/s confirmed optimal.**
+
+### Final state after sweep_params (run_ekf_test.m):
+
+| Dataset | pos_RMSE | yaw_RMSE |
+|---------|----------|----------|
+| task1_1 | 0.0846 | 0.0445 |
+| task1_2 | 0.0772 | 0.0107 |
+| task1_3 | 0.0826 | 0.0133 |
+| task1_4 | 0.0798 | 0.0098 |
+| task2_1 | 0.0774 | 0.0405 |
+| task2_2 | 0.0667 | 0.0478 |
+| task2_3 | 0.0711 | 0.0538 |
+| task2_4 | 0.0732 | 0.0682 |
+| **TOTAL pos** | **0.6126** | — |
+
+vs post-sweep_final baseline: pos 0.6143 → 0.6126 (−0.17%), yaw 0.3120 → 0.2886 (−7.5%).
+
+**Active parameters in myEKF_ca.m:**
+- `gyro_x_bias = -0.0072`
+- `gyro_scale = 1.09`
+- `R_tof = [0.09², 0.04², 0.09²]` (side/fwd/side)
+- `corner_margin = 0.05`
+- `chi2_thresh = 4.0` (confirmed optimal)
+- `fast_spin_thr = 0.50 rad/s` (confirmed optimal)

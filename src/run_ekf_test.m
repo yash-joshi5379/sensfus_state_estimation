@@ -7,8 +7,9 @@ clear;
 % --- Display flag ---
 % Set to true to show figures interactively (GUI use).
 % Set to false to save silently without opening windows (batch/headless use).
-SHOW_FIGURES = true;
+SHOW_FIGURES = false;
 fig_vis = 'off'; if SHOW_FIGURES; fig_vis = 'on'; end
+
 
 datasets = { ...
     'data\task1_1 1.mat',       'task1_1' ; ...
@@ -20,7 +21,7 @@ datasets = { ...
     'data\task2_3 1.mat',       'task2_3' ; ...
     'data\task2_4.mat',         'task2_4' };
 
-results = zeros(size(datasets, 1), 4);  % [pos_SSE, pos_MSE, yaw_SSE, yaw_MSE]
+results = zeros(size(datasets, 1), 5);  % [pos_SSE, pos_RMSE, yaw_SSE, yaw_RMSE, final_pos_err]
 
 for d = 1:size(datasets, 1)
     DATA_FILE = datasets{d, 1};
@@ -91,7 +92,8 @@ for d = 1:size(datasets, 1)
     yaw_SSE = sum(yaw_err);
     yaw_MSE = mean(yaw_err);
 
-    results(d,:) = [pos_SSE, sqrt(pos_MSE), yaw_SSE, sqrt(yaw_MSE)];
+    final_pos_err = sqrt((X_log(N,1) - gt_pos(N,1))^2 + (X_log(N,2) - gt_pos(N,2))^2);
+    results(d,:) = [pos_SSE, sqrt(pos_MSE), yaw_SSE, sqrt(yaw_MSE), final_pos_err];
 
     %% --- Plot: Heading ---
     fh1 = figure('Visible', fig_vis); clf; hold on;
@@ -108,6 +110,27 @@ for d = 1:size(datasets, 1)
     xlabel('x [m]'); ylabel('y [m]');
     title(['Position — ' TAG]); axis equal; legend; hold off;
     saveas(fh2, [TAG '_position.jpg']);
+
+    %% --- Plot: Per-step error stem plots ---
+    t_s = (0:N-1) / 200;   % time axis in seconds
+    pos_err_step = sqrt((X_log(:,1) - gt_pos(:,1)).^2 + (X_log(:,2) - gt_pos(:,2)).^2);
+    yaw_err_step = abs(wrapToPi(X_log(:,3) - gt_yaw));
+
+    fh3 = figure('Visible', fig_vis); clf;
+
+    subplot(2,1,1);
+    stem(t_s, pos_err_step, 'filled', 'MarkerSize', 1, 'Color', [0.2 0.5 0.8]);
+    ylabel('Position error (m)');
+    title(['Per-step errors — ' TAG]);
+    grid on;
+
+    subplot(2,1,2);
+    stem(t_s, yaw_err_step, 'filled', 'MarkerSize', 1, 'Color', [0.8 0.3 0.2]);
+    ylabel('Heading error (rad)');
+    xlabel('Time (s)');
+    grid on;
+
+    saveas(fh3, [TAG '_errors.jpg']);
 
     %% --- Plot: Velocity ---
     % dt = 1/200;
@@ -131,11 +154,11 @@ for d = 1:size(datasets, 1)
 end
 
 %% --- Summary table ---
-fprintf('\n%-12s  %10s  %10s  %10s  %10s\n', ...
-    'Dataset', 'Pos SSE', 'Pos RMSE', 'Yaw SSE', 'Yaw RMSE');
-fprintf('%s\n', repmat('-', 1, 57));
+fprintf('\n%-12s  %10s  %10s  %10s  %10s  %12s\n', ...
+    'Dataset', 'Pos SSE', 'Pos RMSE', 'Yaw SSE', 'Yaw RMSE', 'Final Pos Err');
+fprintf('%s\n', repmat('-', 1, 72));
 for d = 1:size(datasets, 1)
-    fprintf('%-12s  %10.4f  %10.4f  %10.4f  %10.4f\n', ...
-        datasets{d,2}, results(d,1), results(d,2), results(d,3), results(d,4));
+    fprintf('%-12s  %10.4f  %10.4f  %10.4f  %10.4f  %12.4f\n', ...
+        datasets{d,2}, results(d,1), results(d,2), results(d,3), results(d,4), results(d,5));
 end
-fprintf('\nPosition errors in m^2, yaw errors in rad^2\n');
+fprintf('\nPosition errors in m^2, yaw errors in rad^2, final pos error in m\n');

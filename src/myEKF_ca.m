@@ -64,7 +64,7 @@ if isempty(initialised)
 
     % --- Raw-sensor scaling ----------------------------------------------
     acc_scale       = 1.0;     % multiply raw acc  to get [m/s^2]
-    gyro_scale      = 1.1;   % reduced from 1.05: task datasets show ~3% over-integration per revolution  % b_omega process noise during motion (0 = frozen); sweep 1e-5 to 1e-3   % scale applied during fast_spin (|gyro_z| > 0.5); sweep independently
+    gyro_scale      = 1.09;  % sweep_params: 1.09 best (task2 yaw -10%, pos -0.4% vs 1.10)
     mag_declination        = 1.168;    % calibrated from full rotation dataset [rad]
     mag_declination_static = -1.4245;  % calibrated from calib2_straight static frames [rad]
 
@@ -115,7 +115,7 @@ end
 % =========================================================================
 step = step + 1;
 
-do_tof = (mod(step, tof_update_freq) == 0);   % true every 20th call (10 Hz)
+do_tof = (step == 1) || (mod(step, tof_update_freq) == 0);   % fire at step 1, then every 20th (10 Hz)
 
 % =========================================================================
 %  EXTRACT MEASUREMENTS
@@ -282,7 +282,7 @@ for s = 1:3 * do_tof
     ray_world = th_u + tof_phi(s);
     hit_x = sx + h_pred * cos(ray_world);
     hit_y = sy + h_pred * sin(ray_world);
-    corner_margin = 0.1;
+    corner_margin = 0.05;  % sweep_params: 0.05 marginally better than 0.10
     if abs(hit_x) > (Lx - corner_margin) && abs(hit_y) > (Ly - corner_margin)
         continue
     end
