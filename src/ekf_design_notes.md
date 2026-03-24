@@ -731,3 +731,226 @@ vs post-sweep_final baseline: pos 0.6143 → 0.6126 (−0.17%), yaw 0.3120 → 0
 - `corner_margin = 0.05`
 - `chi2_thresh = 4.0` (confirmed optimal)
 - `fast_spin_thr = 0.50 rad/s` (confirmed optimal)
+
+---
+
+## Structural Experiments — Summary
+
+The following experiments were motivated by observing that ground-truth heading provides only ~20%
+improvement in position RMSE. The remaining ~80% of error is structural — position estimation
+error independent of heading quality. Four structural alternatives were tested:
+
+---
+
+## ToF Gating with Orbital Velocity Compensation (sweep_tof_spin.m)
+
+**Motivation:** During fast spin the IMU is at radius r_imu ≈ 0.02 m forward of the geometric
+centre. The IMU therefore orbits the turning centre, inducing an apparent translational velocity
+even during pure rotation. Hypothesis: gating ToF during fast spin and injecting orbital velocity
+correction would reduce jumpy position updates.
+
+**Orbital velocity correction (world frame):**
+```
+vx_orbital =  r_imu * sin(θ) * ω
+vy_orbital = -r_imu * cos(θ) * ω
+```
+
+**Part 1 — tof_spin_thr sweep** (0.3–3.0 rad/s; r_imu = 0.02 m):
+
+| tof_spin_thr (rad/s) | t1_pos | t2_pos | sum |
+|----------------------|--------|--------|-----|
+| 0.30 | 0.1718 | 0.3518 | 0.5236 |
+| 0.50 | 0.1042 | 0.1817 | 0.2859 |
+| 1.00 | 0.0835 | 0.1050 | 0.1885 |
+| 2.00 | 0.1023 | 0.0966 | 0.1989 |
+| 3.00 (never fires) | — | — | 0.3618 |
+| **baseline (no gating)** | — | — | **0.3618** |
+
+All thresholds that actually fire degrade performance. At 0.30 rad/s the t2 pos doubles to 0.3518.
+The robot has genuine translational velocity during spins and ToF provides needed position
+corrections; gating it out removes this useful signal.
+
+**Part 2 — r_imu sweep** (threshold fixed at 3.0 rad/s — never fires):
+All values return sum=0.3618 (the correction never activates). The orbital velocity magnitude at
+r_imu=0.02 m is small enough that even if gating fired, the correction would be negligible.
+
+**Conclusion:** ToF gating during fast spin is uniformly harmful. `tof_fast_spin` flag in
+`myEKF_ca.m` remains disabled (set to 0). The IMU offset from geometric centre (tof_offsets)
+is already calibrated relative to the GT reference; no additional correction is needed.
+
+---
+
+## R_tof Inflation During Straight-Line Motion (sweep_straight.m)
+
+**Motivation:** Straight-line sections show sharp left-right jumps at 10 Hz ToF update rate.
+Hypothesis: inflating R_tof during detected straight motion would smooth the trajectory by
+diluting ToF influence when the accelerometer is reliable.
+
+**Straight-line detection:** `|gyro_z| < omega_thr AND speed > speed_thr`
+
+**Part 1 — R_inflate sweep** (omega_thr=0.3 rad/s, speed_thr=0.05 m/s):
+
+| R_inflate | t1_pos | t2_pos | sum |
+|-----------|--------|--------|-----|
+| 1 (baseline) | — | — | 0.3618 |
+| 2 | +0.004 | — | degrades |
+| 4 | worse | — | degrades |
+| 8, 16, 32, 64 | progressively worse | — | degrades |
+
+Every inflation factor degrades performance. Factor=2 alone costs +0.004 on t1 pos.
+
+**Root cause:** The mecanum robot strафes heavily — heading and drive direction are decoupled.
+"Straight-line" detection (low gyro_z, high speed) captures strafing phases where the
+accelerometer is not aligned with the direction of travel. The ToF jumps are necessary
+corrections to erroneous velocity estimates, not noise to be filtered out.
+
+**Part 2:** Not run — no Part 1 improvement to follow up on.
+
+**Conclusion:** R_tof inflation during straight motion is uniformly harmful. Not applied.
+
+---
+
+## Q Tightening During Straight-Line Motion (sweep_straight_Q.m)
+
+**Motivation:** Instead of distrusting ToF, tighten the process noise for velocity/acceleration
+during straight-line motion — allowing the filter to hold a more consistent velocity estimate
+and reducing susceptibility to ToF jitter.
+
+**Part 1 — Q_v_scale sweep** (scales Q(4,4) and Q(5,5); omega_thr=0.3, speed_thr=0.05):
+
+| Q_v_scale | t1_pos | t2_pos | sum |
+|-----------|--------|--------|-----|
+| 1.00 (baseline) | — | — | 0.3618 |
+| 0.50 | worse | — | ≥0.363 |
+| 0.10 | worse | — | ≥0.363 |
+| 0.01 | worse | — | ≥0.363 |
+
+No improvement at any scale. Tighter Q hurts task1 (strafing ~50% of time) more than it
+helps task2.
+
+**Part 2 — Q_a_scale sweep** (scales Q(7,7) and Q(8,8)): Same pattern — no improvement.
+
+**Part 3 — omega_thr sweep** (0.10–1.50 rad/s): Insensitive; never improves on baseline.
+
+**Best found:** sum=0.3643 vs baseline=0.3618 — no combination beats baseline.
+
+**Conclusion:** Q tightening during straight motion is harmful on net. The same root cause
+applies: mecanum strafing means "straight" detection incorrectly fires during lateral motion,
+and tightening Q prevents the filter from tracking the actual (non-aligned) velocity.
+
+---
+
+## Heading-Velocity Alignment Diagnostic
+
+**Question:** Does GT heading align with GT drive direction? (prerequisite for body-frame or
+lateral ZUPT approaches)
+
+**Method:** Computed angle between GT velocity vector (vx,vy) and GT heading θ for all 8 datasets.
+
+**Results:**
+
+| Dataset | Mean angle | Distribution |
+|---------|-----------|--------------|
+| task1_1 | ~87° | bimodal: ~50% < 10°, ~50% > 30° |
+| task1_2 | ~89° | bimodal: ~50% < 10°, ~50% > 30° |
+| task1_3 | ~85° | similar |
+| task1_4 | ~91° | similar |
+| task2_1 | ~95° | >97% of time > 30° misalignment |
+| task2_2 | ~115° | >97% of time > 30° misalignment |
+| task2_3 | ~138° | >97% of time > 30° misalignment |
+| task2_4 | ~143° | >97% of time > 30° misalignment |
+
+**Conclusion:** Heading and drive direction are severely decoupled across all datasets. This is
+expected for mecanum wheels. Body-frame lateral ZUPT is not viable. Any approach that assumes
+heading ≈ drive direction will fail on task2_x datasets.
+
+---
+
+## Body-Frame Velocity States (sweep_body_frame.m)
+
+**Hypothesis:** Storing velocity and acceleration in body frame (vx_b, vy_b, ax_b, ay_b) would
+simplify the IMU update — no rotation matrix needed since acc measurements are already in body
+frame — potentially reducing linearisation error.
+
+**Model structure:**
+- State: `[x, y, θ, vx_b, vy_b, ω, ax_b, ay_b, b_ω]` (9 states, same count)
+- Prediction: position couples through heading:
+  ```
+  x_k+1 = x + (vx_b·cos(θ) - vy_b·sin(θ))·dt + 0.5·(ax_b·cos(θ) - ay_b·sin(θ))·dt²
+  y_k+1 = y + (vx_b·sin(θ) + vy_b·cos(θ))·dt + 0.5·(ax_b·sin(θ) + ay_b·cos(θ))·dt²
+  ```
+- Jacobian: F(1,4)=cos(θ)·dt — heading-dependent coupling to x-position
+- IMU update: `h = [ax_b; ay_b; ω + b_ω]` — no rotation matrix in H
+
+**Part 1 — direct comparison:**
+
+| Model | sum |
+|-------|-----|
+| CA world-frame (baseline) | 0.3618 |
+| Body-frame | 7.0083 |
+
+Body-frame is +1837% worse. Even with extensive Q tuning (Parts 2/3) the best achieved was
+sum=3.1397 (+767%).
+
+**Root cause — heading-dependent observability:**
+World-frame model: F(1,4)=dt always — vx_w always couples to x-position regardless of heading.
+Body-frame model: F(1,4)=cos(θ)·dt — at θ=π/2, vx_b barely couples to x-position. The ToF
+x-sensor cannot correct vx_b errors when the robot faces sideways. Velocity states drift during
+heading-dependent observability gaps, creating systematic accumulating error.
+
+**Conclusion:** Body-frame velocity states are structurally inferior for a ToF-localised mecanum
+robot. World-frame model retained.
+
+---
+
+## CV Model with Acceleration as Control Input (sweep_cv.m)
+
+**Hypothesis:** A 7-state constant-velocity (CV) model using acc as a direct control input
+might be cleaner — the CA model's ax/ay states could be introducing lag or absorbing noise
+that a direct-feed approach would avoid.
+
+**Model structure:**
+- State: `[x, y, θ, vx, vy, ω, b_ω]` (7 states)
+- Prediction (acc as B·u control term):
+  ```
+  ax_inp = acc_bx·cos(θ) - acc_by·sin(θ)    (world-frame rotation of body acc)
+  ay_inp = acc_bx·sin(θ) + acc_by·cos(θ)
+  x_k+1 = x + vx·dt + 0.5·ax_inp·dt²
+  vx_k+1 = vx + ax_inp·dt
+  ```
+- Measurement update: gyro only — `h = ω + b_ω`; no acc in measurement (acc is control input)
+
+**Part 1 — direct comparison:**
+
+| Model | sum |
+|-------|-----|
+| CA (baseline) | 0.3618 |
+| CV | 5.4399 |
+
+CV is +1403% worse at default Q. With Q_v=1.00 m/s²: sum=0.4820 (+33%). With Q_v=1.00 and
+Q_v_fast_spin=0.10: sum=0.4723 (+30.5%). Never approaches CA performance.
+
+**Root cause — CA states act as Kalman low-pass filter:**
+The CA model's ax/ay states form an implicit low-pass filter on the noisy accelerometer.
+The Kalman update smoothly blends acc measurements into ax/ay with appropriate uncertainty,
+attenuating high-frequency noise. The CV model bypasses this filtering — raw acc noise enters
+velocity directly each timestep. With Q_v large (≈1.0), the filter has almost no velocity
+memory and effectively averages acc over a short window — but this is less principled than the
+CA model's Kalman filter structure and still 30% worse.
+
+**Conclusion:** The CA model's ax/ay states are a feature, not a liability. CV model not adopted.
+
+---
+
+## LP_acc Sensor Diagnostic
+
+**Question:** Can the low-pass filtered accelerometer (`lp_acc` in data) improve performance
+by providing cleaner acceleration measurements?
+
+**Finding:** `lp_acc(:,2)` after the same body-frame → world-frame transformation as raw acc
+gives a mean of ~10.2 m/s², compared to raw acc mean of ~-0.1 m/s². The LP_acc axis 2 measures
+gravity (~9.81 m/s²), not horizontal body acceleration.
+
+**Conclusion:** LP_acc has a different physical axis mapping from raw acc. Axis 2 is the vertical
+axis; it is not a drop-in replacement and cannot be used without a separate axis remapping and
+gravity subtraction. Not investigated further.

@@ -73,14 +73,14 @@ if isempty(initialised)
     %     dx_fwd  > 0  →  toward robot front
     %     dy_left > 0  →  toward robot left side
     tof_offsets = [ 0.00,  0.03;   % ToF1 – right-facing
-                    -0.02,  0.00;   % ToF2 – forward-facing
+                   -0.02,  0.00;   % ToF2 – forward-facing
                     0.00, -0.03];  % ToF3 – left-facing
 
     % --- ToF firing angles relative to body forward axis [rad] -----------
     tof_phi = [pi/2; pi; -pi/2];   % right, forward, left (body x points backward)
 
     % --- Mahalanobis gate  (chi-sq 1 DOF, 99th percentile) --------------
-    chi2_thresh = 4.0;
+    chi2_thresh = 4;
 
     % --- Initial state ---------------------------------------------------
     X = zeros(9, 1);   % assume robot starts at arena centre, at rest, zero bias
@@ -121,10 +121,12 @@ do_tof = (step == 1) || (mod(step, tof_update_freq) == 0);   % fire at step 1, t
 %  EXTRACT MEASUREMENTS
 % =========================================================================
 % Board upended: robot horizontal plane on sensor indices 2 & 3
-acc_bx = -double(acc(2))  * acc_scale - acc_x_bias;    % body x-acceleration  [m/s^2]
-acc_by = double(acc(3))  * acc_scale - acc_y_bias;    % body y-acceleration  [m/s^2]
-gyro_z    = (double(gyro(1)) - gyro_x_bias) * gyro_scale;
+acc_bx = (-double(acc(2)) - acc_x_bias) * acc_scale;    % body x-acceleration  [m/s^2]
+acc_by = (double(acc(3))  - acc_y_bias) * acc_scale;    % body y-acceleration  [m/s^2]
+gyro_z = (double(gyro(1)) - gyro_x_bias) * gyro_scale;
 fast_spin = abs(gyro_z) > 0.5;
+% tof_fast_spin = abs(gyro_z) > 0.75;
+tof_fast_spin = 0;
 
 % Magnetometer: one-time heading seed at step 1 only, gated on low gyro_z
 % (motors off). During operation, EMI corrupts mag so it is not used further.
@@ -255,7 +257,10 @@ end
 % =========================================================================
 %  UPDATE — ToF sensors  (10 Hz: every 20th step)
 % =========================================================================
-for s = 1:3 * do_tof
+if tof_fast_spin
+    X_u(4) = 0; X_u(5) = 0; % Zero velocity
+end
+for s = 1:3 * do_tof * ~tof_fast_spin
     if ~tof_ok(s)
         continue
     end
@@ -303,7 +308,7 @@ for s = 1:3 * do_tof
     nu_tof = tof_d(s) - h_pred;
     S_tof  = H_tof * P_u * H_tof' + R_tof_a;
 
-    if (nu_tof^2 / S_tof) > chi2_thresh
+    if (nu_tof^2 / S_tof) > chi2_thresh && step ~= 1
         continue
     end
 
@@ -328,7 +333,6 @@ X = X_u;
 P = P_u;
 
 X_Est = X;
-% X_Est(2) = X_Est(2) - 0.25; % Necessary offset for where the GT is zeroed
 P_Est = P;
 
 end % myEKF_ca

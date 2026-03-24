@@ -7,19 +7,20 @@ clear;
 % --- Display flag ---
 % Set to true to show figures interactively (GUI use).
 % Set to false to save silently without opening windows (batch/headless use).
-SHOW_FIGURES = false;
+SHOW_FIGURES = true;
 fig_vis = 'off'; if SHOW_FIGURES; fig_vis = 'on'; end
 
 
 datasets = { ...
-    'data\task1_1 1.mat',       'task1_1' ; ...
-    'data\task1_2 1.mat',       'task1_2' ; ...
-    'data\task1_3.mat',         'task1_3' ; ...
-    'data\task1_4.mat',         'task1_4' ; ...
+    % 'data\task1_1 1.mat',       'task1_1' ; ...
+    % 'data\task1_2 1.mat',       'task1_2' ; ...
+    % 'data\task1_3.mat',         'task1_3' ; ...
+    % 'data\task1_4.mat',         'task1_4' ; ...
     'data\task2_1 1.mat',       'task2_1' ; ...
     'data\task2_2 1.mat',       'task2_2' ; ...
     'data\task2_3 1.mat',       'task2_3' ; ...
-    'data\task2_4.mat',         'task2_4' };
+    'data\task2_4.mat',         'task2_4' ...
+    };
 
 results = zeros(size(datasets, 1), 5);  % [pos_SSE, pos_RMSE, yaw_SSE, yaw_RMSE, final_pos_err]
 
@@ -133,23 +134,23 @@ for d = 1:size(datasets, 1)
     saveas(fh3, [TAG '_errors.jpg']);
 
     %% --- Plot: Velocity ---
-    % dt = 1/200;
-    % gt_vx = [0; diff(gt_pos(:,1))] / dt;
-    % gt_vy = [0; diff(gt_pos(:,2))] / dt;
-    % 
-    % figure(4*d - 1); clf;
-    % subplot(2,1,1); hold on;
-    % plot(gt_vx,      'b', 'DisplayName', 'GT');
-    % plot(X_log(:,4), 'r', 'DisplayName', 'Est');
-    % ylabel('vx [m/s]'); xlabel('Sample');
-    % title(['Velocity X — ' TAG]); legend; hold off;
-    % 
-    % subplot(2,1,2); hold on;
-    % plot(gt_vy,      'b', 'DisplayName', 'GT');
-    % plot(X_log(:,5), 'r', 'DisplayName', 'Est');
-    % ylabel('vy [m/s]'); xlabel('Sample');
-    % title(['Velocity Y — ' TAG]); legend; hold off;
-    % saveas(gcf, [TAG '_velocity.jpg']);
+    dt = 1/200;
+    gt_vx = [0; diff(gt_pos(:,1))] / dt;
+    gt_vy = [0; diff(gt_pos(:,2))] / dt;
+
+    fh4 = figure('Visible', fig_vis); clf;
+    subplot(2,1,1); hold on;
+    plot(t_s, gt_vx,      'b', 'DisplayName', 'GT');
+    plot(t_s, X_log(:,4), 'r', 'DisplayName', 'Est');
+    ylabel('vx [m/s]'); xlabel('Time (s)');
+    title(['Velocity X — ' TAG]); legend; hold off;
+
+    subplot(2,1,2); hold on;
+    plot(t_s, gt_vy,      'b', 'DisplayName', 'GT');
+    plot(t_s, X_log(:,5), 'r', 'DisplayName', 'Est');
+    ylabel('vy [m/s]'); xlabel('Time (s)');
+    title(['Velocity Y — ' TAG]); legend; hold off;
+    saveas(fh4, [TAG '_velocity.jpg']);
     if ~SHOW_FIGURES; close all; end
 end
 
