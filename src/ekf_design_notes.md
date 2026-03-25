@@ -954,3 +954,119 @@ gravity (~9.81 m/s²), not horizontal body acceleration.
 **Conclusion:** LP_acc has a different physical axis mapping from raw acc. Axis 2 is the vertical
 axis; it is not a drop-in replacement and cannot be used without a separate axis remapping and
 gravity subtraction. Not investigated further.
+
+---
+
+## LP_acc Full Axis Mapping (extended investigation)
+
+**Finding:** Correlation analysis across axes:
+- `lp(1)` ↔ `acc(2)`: r=0.85 (body x horizontal)
+- `lp(2)` ↔ `-acc(1)`: r=0.87 (gravity, sign-flipped)
+- `lp(3)` ↔ `acc(3)`: r=0.90 (body y horizontal)
+
+LP_acc axes 1 and 3 DO measure horizontal acceleration. However, noise levels are nearly
+identical to raw acc (std 0.58–0.78 vs 0.57–0.77). The LP filtering does not significantly
+improve SNR. Biases differ (lp(1) mean=0.48 vs acc(2) mean=0.08).
+
+**Conclusion:** LP_acc axes 1,3 are horizontal but offer no noise advantage. Not adopted.
+
+---
+
+## Centripetal Acceleration Correction
+
+**Motivation:** The IMU is offset ~15–19cm from the robot's centre of rotation (IMU near
+ToF sensor board at the front, centre of rotation toward the back). During rotation, the
+accelerometer measures centripetal acceleration (ω²·r) in addition to true translational
+acceleration. At ω=2 rad/s and r=0.15m, this contamination is 0.6 m/s²; at ω=5 rad/s it
+reaches 3.75 m/s² — larger than the acc noise (σ=0.5 m/s²).
+
+**Correction applied to raw acc:**
+```
+acc_bx = acc_bx + omega_raw^2 * imu_offset_x
+acc_by = acc_by + omega_raw^2 * imu_offset_y
+```
+
+Tangential term (α×r) omitted — finite-differencing gyro at 200 Hz amplifies noise
+(σ_α ≈ 4 rad/s², giving ~0.6 m/s² noise at r=0.15m, comparable to acc noise itself).
+
+**imu_offset_x sweep** (imu_offset_y = 0.00 throughout):
+
+| offset | t2_1 pos | t2_2 pos | t2_3 pos | t2_4 pos | pos_sum | yaw_sum |
+|--------|----------|----------|----------|----------|---------|---------|
+| -0.25  | 0.0606   | 0.0450   | 0.0494   | 0.0826   | 0.2376  | 0.2425  |
+| -0.05  | 0.0637   | 0.0444   | 0.0494   | 0.0576   | 0.2152  | 0.2103  |
+| 0.00   | 0.0657   | 0.0441   | 0.0494   | 0.0587   | 0.2178  | 0.2103  |
+| +0.15  | 0.0687   | 0.0435   | 0.0498   | 0.0537   | 0.2157  | 0.1985  |
+| +0.25  | 0.0712   | 0.0431   | 0.0498   | 0.0545   | 0.2186  | 0.1985  |
+
+Phase transition at ~+0.15: task2_4 yaw jumps from 0.0682→0.0536 (−21.4%). Negative
+offsets improve task2_1 but catastrophically worsen task2_4 yaw (0.0682→0.1005). For a
+mecanum robot the centre of rotation is not fixed — it depends on the wheel speed
+combination — so a single offset cannot be universally optimal.
+
+**Best aggregate:** imu_offset_x = +0.15 → pos_sum −1.0%, yaw_sum −5.6% vs baseline.
+
+**Conclusion:** Centripetal correction adopted at imu_offset_x=+0.15. Task2_4 sees the
+largest benefit (yaw −21.4%, position −8.5%). Task2_1 regresses slightly (+4.6% position).
+
+---
+
+## Approaches Tested and Rejected (this session)
+
+### H_imu Theta Jacobian (∂h_acc/∂θ)
+
+Missing Jacobian terms H_imu(1,3) and H_imu(2,3) were identified and added:
+```
+H_imu(1,3) = -axp*sin(θ) + ayp*cos(θ)
+H_imu(2,3) = -axp*cos(θ) - ayp*sin(θ)
+```
+Mathematically correct but diverges at ALL scales tested (1.0, 0.01, 0.001).
+Cross-covariance between θ and ax/ay builds up through the 200 Hz IMU update,
+creating a feedback loop: acc residual → heading correction → acc prediction
+changes → larger residual. Even at 0.1% of the true derivative, the cascade
+destabilises heading within seconds.
+
+Also tested P(3,3)-gated enabling (only when P(3,3) < (5°)²): gate never fires
+because no direct heading measurement exists to shrink P(3,3).
+
+### Chi² Gating on Accelerometer
+
+Separated IMU into gyro (always accepted) + acc (chi² gated). Tested thresholds
+9.0 and 2.0. At 9.0 the gate never fires (same as baseline). At 2.0 it rejects
+useful readings and degrades task2_4 (+19.4% position).
+
+### Signal-Strength-Adaptive R_tof
+
+ToF channel 3 (return signal strength) varies 168–19648 across sensors. Tested
+R_tof scaling inversely with signal (sig_ref=1000 and 2000) and hard rejection
+(threshold=500). Scaling gives <0.5% improvement — the incidence-angle-adaptive
+R_tof already captures measurement quality. Hard rejection catastrophically kills
+position by removing too many ToF3 readings (min signal=168).
+
+### Acc Skip During Rotation
+
+Tested skipping acc update entirely during fast spin (|gyro|>0.5) and during any
+rotation (|gyro|>0.15). Both degrade position: P grows unchecked during the skip
+and the filter must re-converge afterward. The existing R inflation approach
+(R_acc=[1.0,1.0] during fast spin) is superior — it downweights acc while still
+constraining P growth.
+
+### Piecewise Jerk Q Model
+
+Replaced diagonal Q with physically-coupled Q from constant-jerk noise model.
+Q_block = q_j * [dt⁵/20 ...; ...; ... dt]. Produces much smaller position/velocity
+noise (coupled through dynamics). All q_j values tested (2–35) catastrophically
+worsen position (2–12× worse) because the filter resists ToF corrections. The CA
+model is too approximate for a mecanum robot to benefit from tightly-coupled Q.
+
+### Gyro-Only (No Accelerometer Measurement)
+
+Completely removing the acc measurement update (+26% worse on task2_1). The acc
+provides useful velocity/acceleration constraint between ToF updates, even with
+its noise and bias issues.
+
+### No R Inflation with Centripetal Correction
+
+Tested using standard R_imu during fast spin (since centripetal is now corrected).
+Task2_4 regresses (+13% position) — tangential contamination still requires R
+inflation during fast spin.

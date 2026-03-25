@@ -47,6 +47,7 @@ persistent acc_scale gyro_scale mag_declination mag_declination_static dt
 persistent chi2_thresh
 persistent step tof_update_freq
 persistent acc_x_bias acc_y_bias gyro_x_bias gyro_y_bias mag_x_bias mag_y_bias
+persistent imu_offset_x imu_offset_y prev_gyro_z
 
 % =========================================================================
 %  ONE-TIME INITIALISATION  ← edit all tuning / geometry here
@@ -107,6 +108,12 @@ if isempty(initialised)
     % Mag biases retained only for step-1 heading initialisation
     mag_x_bias = -5.475113e-05; mag_y_bias = 7.017891e-05;
 
+    % --- IMU offset from robot center of rotation [m, body frame] --------
+    % Centre ~20cm from ToFs, IMU ~1cm from ToFs → IMU ~0.19m from centre
+    imu_offset_x = 0.15;   % optimal from sweep [-0.25, +0.25]; best net aggregate
+    imu_offset_y = 0.00;
+    prev_gyro_z  = 0;
+
     initialised = true;
 end
 
@@ -124,6 +131,13 @@ do_tof = (step == 1) || (mod(step, tof_update_freq) == 0);   % fire at step 1, t
 acc_bx = (-double(acc(2)) - acc_x_bias) * acc_scale;    % body x-acceleration  [m/s^2]
 acc_by = (double(acc(3))  - acc_y_bias) * acc_scale;    % body y-acceleration  [m/s^2]
 gyro_z = (double(gyro(1)) - gyro_x_bias) * gyro_scale;
+
+% Centripetal correction: subtract IMU-offset-induced acceleration.
+% IMU at offset r from center of rotation measures a_true + ω²·r
+% (tangential α×r term omitted — finite-differencing gyro at 200Hz is too noisy)
+omega_raw = gyro_z;
+acc_bx = acc_bx + omega_raw^2 * imu_offset_x;
+acc_by = acc_by + omega_raw^2 * imu_offset_y;
 fast_spin = abs(gyro_z) > 0.5;
 % tof_fast_spin = abs(gyro_z) > 0.75;
 tof_fast_spin = 0;
@@ -137,9 +151,10 @@ if step == 1
     P(3,3)  = deg2rad(10)^2;   % tighten heading uncertainty after seed
 end
 
-% ToF: channel 1 = range [m], channel 4 = status (0 = valid)
-tof_d  = double([ToF1(1); ToF2(1); ToF3(1)]);
-tof_ok = double([ToF1(4); ToF2(4); ToF3(4)]) == 0;
+% ToF: ch1=range [m], ch2=ambient, ch3=signal, ch4=status (0=valid)
+tof_d   = double([ToF1(1); ToF2(1); ToF3(1)]);
+tof_ok  = double([ToF1(4); ToF2(4); ToF3(4)]) == 0;
+tof_sig = double([ToF1(3); ToF2(3); ToF3(3)]);  % return signal strength
 
 % =========================================================================
 %  PREDICTION STEP  — constant acceleration
@@ -197,34 +212,28 @@ ayp  = X_p(8);
 omp  = X_p(6);
 b_p  = X_p(9);
 
-% During fast rotation, centripetal acceleration contaminates the body-frame
-% acc measurement and projects into world-frame ax/ay → position drift.
-% Inflate acc noise channels so the filter ignores acc for translation when spinning.
+% Predicted body-frame accelerations  (world → body rotation)
+h_ax  =  axp*cos(th_p) + ayp*sin(th_p);
+h_ay  = -axp*sin(th_p) + ayp*cos(th_p);
+
+% Gyro predicted measurement includes estimated residual bias:
+h_gyro = omp + b_p;
+
+% During fast rotation, centripetal/tangential acceleration contaminates the
+% body-frame acc. Inflate acc noise so filter ignores acc for translation.
 if fast_spin
     R_imu_cur = diag([ 1.0, 1.0, 0.02 ].^2);   % distrust acc, keep gyro
 else
     R_imu_cur = R_imu;
 end
 
-% Predicted body-frame accelerations  (world → body rotation)
-h_ax  =  axp*cos(th_p) + ayp*sin(th_p);
-h_ay  = -axp*sin(th_p) + ayp*cos(th_p);
-
-% Gyro predicted measurement includes estimated residual bias:
-%   measured_gyro = omega_true + b_residual + noise
-%   h_gyro        = omega_state + b_state
-h_gyro = omp + b_p;
-
 % --- acc + gyro update (every step) ---
 h_imu = [h_ax; h_ay; h_gyro];
 
 H_imu = zeros(3, 9);
-H_imu(1,7) =  cos(th_p);   % ∂h_ax/∂ax
-H_imu(1,8) =  sin(th_p);   % ∂h_ax/∂ay
-H_imu(2,7) = -sin(th_p);   % ∂h_ay/∂ax
-H_imu(2,8) =  cos(th_p);   % ∂h_ay/∂ay
-H_imu(3,6) =  1;            % ∂h_gyro/∂omega
-H_imu(3,9) =  1;            % ∂h_gyro/∂b_omega
+H_imu(1,7) =  cos(th_p);   H_imu(1,8) = sin(th_p);
+H_imu(2,7) = -sin(th_p);   H_imu(2,8) = cos(th_p);
+H_imu(3,6) =  1;            H_imu(3,9) = 1;
 
 z_imu  = [acc_bx; acc_by; gyro_z];
 nu_imu = z_imu - h_imu;

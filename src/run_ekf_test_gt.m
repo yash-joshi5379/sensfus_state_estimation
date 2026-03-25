@@ -6,7 +6,7 @@
 
 clear;
 
-SHOW_FIGURES = true;
+SHOW_FIGURES = false;
 fig_vis = 'off'; if SHOW_FIGURES; fig_vis = 'on'; end
 
 datasets = { ...

@@ -7,7 +7,7 @@ clear;
 % --- Display flag ---
 % Set to true to show figures interactively (GUI use).
 % Set to false to save silently without opening windows (batch/headless use).
-SHOW_FIGURES = true;
+SHOW_FIGURES = false;
 fig_vis = 'off'; if SHOW_FIGURES; fig_vis = 'on'; end
 
 
