@@ -3,10 +3,10 @@ model = "src\IKS02A1_VL53L1A1_Both_ROS_fromworkspace_2025b_forstudents.slx";
 load_system(model);
 
 %% Load data and run
-sensorLog = load("data\calib1_rotate.mat").out;
+sensorLog = load("data\task2_2 1.mat").out;
 % Clear initial NaN values
 sensorLog.GT_time.signals.values(isnan(sensorLog.GT_time.signals.values)) = 0;
-
+%%
 out = sim(model);
 
 figure(1); clf; hold on;
